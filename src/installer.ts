@@ -1,27 +1,59 @@
 // `bun run install:server` — zero-setup llama-server provisioning.
 //
 // Strategy (in order):
-//   1. Detect backend: CUDA driver -> cuda, Vulkan loader -> vulkan, else cpu.
-//   2. Download the matching prebuilt tarball from the latest bNNNN
-//      llama.cpp release into the XDG data dir and verify `--version`.
-//   3. Fallback: cmake build from ./llama.cpp (CPU, or Vulkan if glslc exists).
+//   1. Detect the hardware and propose a backend (see ./backends.ts).
+//   2. Download the matching prebuilt tarball from the latest bNNNN llama.cpp
+//      release into the XDG data dir and verify `--version` plus, for GPU
+//      builds, that `--list-devices` actually lists the device.
+//   3. Walk the backend's fallback chain when a slice is missing or unusable.
+//   4. Last resort: build from source (a shallow llama.cpp clone, cmake).
 //
-// LazyLlama itself never compiles: this script is explicit-only.
-// Pure helpers (pickAsset, latestBinaryTag, ...) are unit-tested.
+// LazyLlama itself never provisions or compiles: the full wizard in
+// ./install.ts is explicit-only, and the app never calls any of this.
+// Pure helpers (pickAsset, proposeBackend, ...) live in ./backends.ts and are
+// unit-tested; only the network and process work is here.
 
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  writeSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import {
+  detectHardware,
+  describeHardware,
+  deviceVisible,
+  fallbackChain,
+  proposeBackend,
+  backendDef,
+  backendLabel,
+  currentArch,
+  currentPlatform,
+  isBinaryTag,
+  latestBinaryTag,
+  pickAsset,
+  type Backend,
+  type BackendProposal,
+  type Hardware,
+} from "./backends.js";
+import { dataHome, sourceDir } from "./paths.js";
 
-export type Backend = "cuda" | "vulkan" | "cpu" | "rocm";
+// Re-exported so the app, the tests and `bun run install:server` keep one
+// import site for provisioning concerns.
+export * from "./backends.js";
 
 export function dataDir(): string {
-  const xdg = process.env["XDG_DATA_HOME"];
-  const base = xdg && xdg.length > 0 ? xdg : join(homedir(), ".local", "share");
-  return join(base, "lazyllama");
+  return join(dataHome(), "lazyllama");
 }
 
 export function serverInstallDir(): string {
@@ -36,6 +68,9 @@ export interface Receipt {
   tag: string;
   backend: Backend;
   binary: string;
+  arch: string;
+  platform: string;
+  installedAt: string;
 }
 
 export function readReceipt(): Receipt | undefined {
@@ -43,7 +78,14 @@ export function readReceipt(): Receipt | undefined {
     if (!existsSync(receiptPath())) return undefined;
     const raw = JSON.parse(readFileSync(receiptPath(), "utf8")) as Partial<Receipt>;
     if (typeof raw.binary === "string" && existsSync(raw.binary)) {
-      return { tag: String(raw.tag ?? ""), backend: raw.backend ?? "cpu", binary: raw.binary };
+      return {
+        tag: String(raw.tag ?? ""),
+        backend: (raw.backend ?? "cpu") as Backend,
+        binary: raw.binary,
+        arch: String(raw.arch ?? currentArch()),
+        platform: String(raw.platform ?? currentPlatform()),
+        installedAt: String(raw.installedAt ?? ""),
+      };
     }
     return undefined;
   } catch {
@@ -85,221 +127,44 @@ function commandOk(cmd: string, args: string[]): boolean {
   }
 }
 
-function commandOut(cmd: string, args: string[], timeoutMs = 15000): string | undefined {
-  try {
-    return execFileSync(cmd, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: timeoutMs });
-  } catch {
-    return undefined;
-  }
+// -- progress -------------------------------------------------------------
+
+export type InstallPhase = "resolve" | "download" | "extract" | "verify" | "clone" | "build" | "done";
+
+export interface InstallProgress {
+  phase: InstallPhase;
+  label: string;
+  /** 0..1 when known; undefined for indeterminate phases. */
+  fraction?: number;
+  receivedBytes?: number;
+  totalBytes?: number;
+  detail?: string;
 }
 
-// -- hardware survey (pure parsers take text so tests use fixtures) --------
+export type ProgressFn = (progress: InstallProgress) => void;
 
-export interface GpuInfo {
-  vendor: "nvidia" | "amd" | "intel" | "apple" | "other";
-  name: string;
+export interface AbortSignalLike {
+  aborted: boolean;
 }
 
-export interface Hardware {
-  prettyOs: string;
-  arch: string;
-  gpus: GpuInfo[];
-  nvidiaDriverMajor?: number;
-  hasVulkanLoader: boolean;
-  vulkanDevices: string[];
-  cpuFlags: string[];
+function abortError(): Error {
+  const err = new Error("aborted") as Error & { name: string };
+  err.name = "AbortError";
+  return err;
 }
 
-export function parseOsRelease(text: string): string {
-  const pretty = text.split("\n").find((l) => l.startsWith("PRETTY_NAME="));
-  if (pretty) return pretty.slice("PRETTY_NAME=".length).replace(/^"|"$/g, "");
-  const id = text.split("\n").find((l) => l.startsWith("ID="));
-  return id ? id.slice(3).replace(/^"|"$/g, "") : process.platform;
+function checkAbort(signal?: AbortSignalLike): void {
+  if (signal?.aborted) throw abortError();
 }
 
-export function parseLspci(text: string): GpuInfo[] {
-  const out: GpuInfo[] = [];
-  for (const line of text.split("\n")) {
-    if (!/vga|3d controller|display controller/i.test(line)) continue;
-    const idMatch = line.match(/\[([0-9a-fA-F]{4}):[0-9a-fA-F]{4}\]/);
-    const vendorId = idMatch?.[1]?.toLowerCase();
-    const vendor = vendorId === "10de" ? "nvidia" : vendorId === "1002" ? "amd" : vendorId === "8086" ? "intel" : "other";
-    const name = line.split(": ").slice(1).join(": ").replace(/\s*\[[0-9a-fA-F]{4}:[0-9a-fA-F]{4}\].*$/, "").trim();
-    out.push({ vendor, name });
-  }
-  return out;
-}
-
-export function parseNvidiaDriverVersion(text: string): number | undefined {
-  const m = text.trim().match(/^(\d+)\./);
-  return m?.[1] ? Number(m[1]) : undefined;
-}
-
-export function parseVulkanDevices(summary: string): string[] {
-  const names: string[] = [];
-  for (const line of summary.split("\n")) {
-    const m = line.match(/deviceName\s*=\s*(.+)/);
-    if (m?.[1]) names.push(m[1].trim());
-  }
-  return names;
-}
-
-// Minimum NVIDIA driver major for our CUDA 12.8 prebuilt bundle.
-export const CUDA_MIN_DRIVER_MAJOR = 565;
-
-export function detectHardware(): Hardware {
-  let prettyOs: string = process.platform;
-  try {
-    prettyOs = parseOsRelease(readFileSync("/etc/os-release", "utf8"));
-  } catch {
-    // non-Linux (macOS/Windows): keep platform id
-  }
-  if (process.platform === "darwin") {
-    const arm = process.arch === "arm64";
-    return {
-      prettyOs: "macOS",
-      arch: process.arch,
-      gpus: arm ? [{ vendor: "apple", name: "Apple Silicon (Metal)" }] : [],
-      hasVulkanLoader: false,
-      vulkanDevices: [],
-      cpuFlags: [],
-    };
-  }
-  const lspci = commandOut("lspci", ["-nn"]);
-  const gpus = lspci ? parseLspci(lspci) : [];
-  const driverOut = commandOut("nvidia-smi", ["--query-gpu=driver_version", "--format=csv,noheader"]);
-  const nvidiaDriverMajor = driverOut ? parseNvidiaDriverVersion(driverOut) : undefined;
-  const ldconfig = commandOut("ldconfig", ["-p"]);
-  const hasVulkanLoader = ldconfig !== undefined && ldconfig.includes("libvulkan.so");
-  // NOTE: `vulkaninfo --version` is not a valid flag on all builds (exits 1);
-  // go straight for --summary and treat failure as "no devices enumerated".
-  const vulkanDevices = hasVulkanLoader ? parseVulkanDevices(commandOut("vulkaninfo", ["--summary"]) ?? "") : [];
-  let cpuFlags: string[] = [];
-  try {
-    const cpuinfo = readFileSync("/proc/cpuinfo", "utf8");
-    const flagsLine = cpuinfo.split("\n").find((l) => l.startsWith("flags"));
-    cpuFlags = flagsLine ? (flagsLine.split(":")[1] ?? "").trim().split(/\s+/) : [];
-  } catch {
-    // ignore
-  }
-  return { prettyOs, arch: process.arch, gpus, nvidiaDriverMajor, hasVulkanLoader, vulkanDevices, cpuFlags };
-}
-
-export interface BackendProposal {
-  backend: Backend;
-  reasons: string[];
-  warnings: string[];
-}
-
-// Ordered rules: discrete NVIDIA with a fresh driver -> CUDA, any
-// Vulkan-capable GPU (AMD/Intel, discrete or integrated) -> Vulkan,
-// Apple Silicon -> Metal-inclusive default build, else CPU.
-export function proposeBackend(hw: Hardware): BackendProposal {
-  const warnings: string[] = [];
-  const hasNvidia = hw.gpus.some((g) => g.vendor === "nvidia");
-  if (hasNvidia && hw.nvidiaDriverMajor !== undefined) {
-    if (hw.nvidiaDriverMajor >= CUDA_MIN_DRIVER_MAJOR) {
-      return {
-        backend: "cuda",
-        reasons: [`NVIDIA GPU with working driver (major ${hw.nvidiaDriverMajor})`],
-        warnings,
-      };
-    }
-    warnings.push(
-      `NVIDIA driver ${hw.nvidiaDriverMajor} predates CUDA 12.8 builds (need >= ${CUDA_MIN_DRIVER_MAJOR}); skipping CUDA`,
-    );
-  } else if (hasNvidia) {
-    warnings.push("NVIDIA GPU present but nvidia-smi is unusable; skipping CUDA");
-  }
-  const gpuNames = hw.gpus.map((g) => g.name).join("; ");
-  if (hw.vulkanDevices.length > 0) {
-    return {
-      backend: "vulkan",
-      reasons: [`Vulkan device(s): ${hw.vulkanDevices.join("; ")}${gpuNames ? ` (pci: ${gpuNames})` : ""}`],
-      warnings,
-    };
-  }
-  if (hw.hasVulkanLoader && hw.gpus.some((g) => g.vendor === "amd" || g.vendor === "intel")) {
-    return {
-      backend: "vulkan",
-      reasons: [`${gpuNames} with Vulkan loader present (devices not enumerated)`],
-      warnings,
-    };
-  }
-  if (hw.gpus.some((g) => g.vendor === "apple")) {
-    return { backend: "cpu", reasons: ["Apple Silicon: default build includes Metal"], warnings };
-  }
-  const simd = ["avx512f", "avx2", "vnni", "neon"].filter((f) => hw.cpuFlags.includes(f));
-  return {
-    backend: "cpu",
-    reasons: [hw.gpus.length > 0 ? `no accelerated path for: ${gpuNames}` : "no GPU detected", `CPU fallback${simd.length > 0 ? ` (${simd.join(", ")})` : ""}`],
-    warnings,
-  };
-}
-
-export function describeHardware(hw: Hardware): string {
-  const lines = [`OS: ${hw.prettyOs} (${hw.arch})`];
-  lines.push(hw.gpus.length > 0 ? `GPU: ${hw.gpus.map((g) => `[${g.vendor}] ${g.name}`).join(" | ")}` : "GPU: none detected");
-  if (hw.nvidiaDriverMajor !== undefined) lines.push(`NVIDIA driver: ${hw.nvidiaDriverMajor}`);
-  lines.push(`Vulkan loader: ${hw.hasVulkanLoader ? `yes (${hw.vulkanDevices.length} device(s))` : "no"}`);
-  return lines.join("\n");
-}
-
-export function detectBackend(): Backend {
-  return proposeBackend(detectHardware()).backend;
-}
-
-export function isBinaryTag(tag: string): boolean {
-  return /^b\d+$/.test(tag);
-}
-
-export function latestBinaryTag(tags: string[]): string | undefined {
-  return tags.find((t) => isBinaryTag(t));
-}
-
-export interface ReleaseAsset {
-  name: string;
-  url: string;
-}
-
-// Pick a prebuilt asset from a release listing. Token rules beat
-// hardcoded names so renames upstream don't silently break us.
-export function pickAsset(assets: ReleaseAsset[], backend: Backend): ReleaseAsset | undefined {
-  const lower = (s: string) => s.toLowerCase();
-  if (process.platform === "darwin") {
-    // Default macOS build includes Metal; arch picks the slice.
-    const archToken = process.arch === "arm64" ? "arm64" : "x64";
-    return assets.find((a) => lower(a.name).includes("macos") && lower(a.name).includes(archToken));
-  }
-  if (process.platform === "win32") return undefined; // WSL or manual install for now
-  if (backend === "cuda") {
-    return assets.find((a) => lower(a.name).includes("cudart") && lower(a.name).includes("cuda-12"));
-  }
-  if (backend === "vulkan") {
-    return assets.find(
-      (a) => lower(a.name).includes("ubuntu") && lower(a.name).includes("vulkan") && lower(a.name).includes("x64"),
-    );
-  }
-  if (backend === "rocm") {
-    return assets.find(
-      (a) => lower(a.name).includes("ubuntu") && lower(a.name).includes("rocm") && lower(a.name).includes("x64"),
-    );
-  }
-  return assets.find(
-    (a) =>
-      lower(a.name).includes("ubuntu") &&
-      lower(a.name).includes("x64") &&
-      lower(a.name).endsWith(".tar.gz") &&
-      !["cuda", "cudart", "rocm", "sycl", "openvino", "vulkan", "android"].some((t) => lower(a.name).includes(t)),
-  );
-}
+// -- release plumbing -----------------------------------------------------
 
 interface GitHubRelease {
   tag_name: string;
   assets: Array<{ name: string; browser_download_url: string }>;
 }
 
-async function fetchReleases(): Promise<GitHubRelease[]> {
+export async function fetchReleases(): Promise<GitHubRelease[]> {
   const res = await fetch("https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30", {
     headers: { "User-Agent": "lazyllama-installer", Accept: "application/vnd.github+json" },
   });
@@ -307,77 +172,182 @@ async function fetchReleases(): Promise<GitHubRelease[]> {
   return (await res.json()) as GitHubRelease[];
 }
 
-async function downloadTo(url: string, dest: string): Promise<void> {
+/**
+ * Stream an asset to disk. The CUDA bundle is ~570 MB, so the body is consumed
+ * incrementally: progress can be reported, memory stays flat, and Esc can cut
+ * the transfer short.
+ */
+export async function downloadTo(
+  url: string,
+  dest: string,
+  onProgress?: ProgressFn,
+  signal?: AbortSignalLike,
+): Promise<number> {
   const res = await fetch(url, { headers: { "User-Agent": "lazyllama-installer" } });
   if (!res.ok || !res.body) throw new Error(`download -> ${res.status}`);
-  const buf = Buffer.from(await res.arrayBuffer());
-  writeFileSync(dest, buf);
+  const total = Number(res.headers.get("content-length") ?? 0);
+  const fd = openSync(dest, "w");
+  let received = 0;
+  try {
+    for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+      checkAbort(signal);
+      writeSync(fd, chunk);
+      received += chunk.length;
+      onProgress?.({
+        phase: "download",
+        label: `downloading ${basenameOf(url)}`,
+        fraction: total > 0 ? Math.min(1, received / total) : undefined,
+        receivedBytes: received,
+        totalBytes: total > 0 ? total : undefined,
+      });
+    }
+  } catch (err) {
+    closeSync(fd);
+    throw err;
+  }
+  closeSync(fd);
+  return received;
+}
+
+function basenameOf(path: string): string {
+  const cut = path.lastIndexOf("/");
+  return cut < 0 ? path : path.slice(cut + 1);
 }
 
 function untar(archive: string, dest: string): void {
   mkdirSync(dest, { recursive: true });
-  execFileSync("tar", ["-xzf", archive, "-C", dest], { stdio: "inherit" });
+  execFileSync("tar", ["-xzf", archive, "-C", dest], { stdio: "ignore" });
 }
 
-function verifyBinary(bin: string, backend: Backend): boolean {
+export function verifyBinary(bin: string, backend: Backend): boolean {
   try {
     chmodSync(bin, 0o755);
     execFileSync(bin, ["--version"], { stdio: "ignore", timeout: 30000 });
   } catch {
     return false;
   }
-  // A GPU build that cannot see its device is a bad install: the flag
-  // exists on llama-server and exits 0 while listing backends.
-  if (backend === "cuda" || backend === "vulkan" || backend === "rocm") {
+  // A GPU build that cannot see its device is a bad install: the flag exists on
+  // llama-server and exits 0 while listing backends.
+  const def = backendDef(backend);
+  if (!def.deviceTokens) return true;
+  try {
+    const out = execFileSync(bin, ["--list-devices"], { encoding: "utf8", timeout: 30000 });
+    return deviceVisible(backend, out);
+  } catch {
+    return false;
+  }
+}
+
+export interface AttemptResult {
+  binary: string;
+  tag: string;
+  backend: Backend;
+  attempts: Array<{ backend: Backend; ok: boolean; error?: string }>;
+}
+
+export async function provision(
+  backend: Backend,
+  opts: { tag?: string; force?: boolean; onProgress?: ProgressFn; signal?: AbortSignalLike } = {},
+): Promise<AttemptResult> {
+  const { onProgress, signal } = opts;
+  mkdirSync(serverInstallDir(), { recursive: true });
+  const attempts: AttemptResult["attempts"] = [];
+  onProgress?.({ phase: "resolve", label: `resolving the ${backendLabel(backend)} release` });
+  let releases: GitHubRelease[];
+  try {
+    releases = await fetchReleases();
+  } catch (err) {
+    throw new Error(`cannot reach the GitHub releases API: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const tag = opts.tag ?? latestTag(releases);
+  if (!tag) throw new Error("no bNNNN release found on GitHub");
+  const release = releases.find((r) => r.tag_name === tag);
+  if (!release) throw new Error(`release ${tag} vanished`);
+  for (const candidate of fallbackChain(backend)) {
+    checkAbort(signal);
+    const asset = pickAsset(
+      release.assets.map((a) => ({ name: a.name, url: a.browser_download_url })),
+      candidate,
+    );
+    if (!asset) {
+      attempts.push({ backend: candidate, ok: false, error: `no ${candidate} asset in ${tag}` });
+      continue;
+    }
+    const dest = join(serverInstallDir(), tag);
+    const archive = join(tmpdir(), asset.name);
     try {
-      const out = execFileSync(bin, ["--list-devices"], { encoding: "utf8", timeout: 30000 });
-      const want = backend === "cuda" ? /cuda/i : backend === "rocm" ? /roc.?m|hip/i : /vulkan/i;
-      if (!want.test(out)) return false;
-    } catch {
-      return false;
+      checkAbort(signal);
+      await downloadTo(asset.url, archive, onProgress, signal);
+      checkAbort(signal);
+      onProgress?.({ phase: "extract", label: `extracting ${asset.name}` });
+      untar(archive, dest);
+      const bin = findServerBinary(dest);
+      if (!bin) throw new Error("llama-server not found inside the archive");
+      onProgress?.({ phase: "verify", label: `verifying ${candidate}` });
+      if (!verifyBinary(bin, candidate)) throw new Error(`failed verification (no usable ${candidate} device?)`);
+      const receipt: Receipt = {
+        tag,
+        backend: candidate,
+        binary: bin,
+        arch: currentArch(),
+        platform: currentPlatform(),
+        installedAt: new Date().toISOString(),
+      };
+      writeFileSync(receiptPath(), JSON.stringify(receipt, null, 2) + "\n", "utf8");
+      attempts.push({ backend: candidate, ok: true });
+      onProgress?.({ phase: "done", label: `installed ${backendLabel(candidate)}`, fraction: 1 });
+      return { binary: bin, tag, backend: candidate, attempts };
+    } catch (err) {
+      attempts.push({
+        backend: candidate,
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
-  return true;
-}
-
-async function tryDownload(backend: Backend, pinTag?: string): Promise<string> {
-  const releases = await fetchReleases();
-  const tag = pinTag ?? latestBinaryTag(releases.map((r) => r.tag_name));
-  if (!tag) throw new Error("no bNNNN release found on GitHub");
-  const rel = releases.find((r) => r.tag_name === tag);
-  if (!rel) throw new Error(`release ${tag} vanished`);
-  const asset = pickAsset(
-    rel.assets.map((a) => ({ name: a.name, url: a.browser_download_url })),
-    backend,
+  throw new Error(
+    `no usable build for ${backendLabel(backend)}: ${attempts.map((a) => `${a.backend} (${a.error ?? "failed"})`).join(", ")}`,
   );
-  if (!asset) throw new Error(`no ${backend} asset in ${tag}`);
-  console.log(`downloading ${asset.name} ...`);
-  const dest = join(serverInstallDir(), tag);
-  const archive = join(tmpdir(), asset.name);
-  await downloadTo(asset.url, archive);
-  untar(archive, dest);
-  const bin = findServerBinary(dest);
-  if (!bin) throw new Error(`llama-server not found inside ${asset.name}`);
-  if (!verifyBinary(bin, backend)) throw new Error(`${bin} failed verification (no usable ${backend} device?)`);
-  const receipt: Receipt = { tag, backend, binary: bin };
-  writeFileSync(receiptPath(), JSON.stringify(receipt, null, 2) + "\n", "utf8");
-  return bin;
 }
 
-function cmakeBuild(backend: Backend): string {
-  const src = join(process.cwd(), "llama.cpp");
-  if (!existsSync(join(src, "CMakeLists.txt"))) {
-    throw new Error("llama.cpp/ checkout missing; cannot compile");
-  }
+function latestTag(releases: GitHubRelease[]): string | undefined {
+  return latestBinaryTag(releases.map((r) => r.tag_name));
+}
+
+// -- build from source ----------------------------------------------------
+
+const LLAMA_CPP_URL = "https://github.com/ggml-org/llama.cpp";
+
+/** Shallow clone into the data dir: a standalone install has no ./llama.cpp. */
+export function ensureLlamaCpp(dest: string = sourceDir(), onProgress?: ProgressFn): string {
+  if (existsSync(join(dest, "CMakeLists.txt"))) return dest;
+  onProgress?.({ phase: "clone", label: "cloning llama.cpp" });
+  mkdirSync(dirnameOf(dest), { recursive: true });
+  execFileSync("git", ["clone", "--depth", "1", LLAMA_CPP_URL, dest], { stdio: "ignore" });
+  return dest;
+}
+
+function dirnameOf(path: string): string {
+  const cut = path.lastIndexOf("/");
+  return cut <= 0 ? "/" : path.slice(0, cut);
+}
+
+export function cmakeBuild(
+  backend: Backend,
+  opts: { src?: string; onProgress?: ProgressFn; signal?: AbortSignalLike } = {},
+): string {
+  const src = ensureLlamaCpp(opts.src, opts.onProgress);
+  if (!existsSync(join(src, "CMakeLists.txt"))) throw new Error("llama.cpp checkout missing; cannot compile");
   for (const tool of ["cmake", "make"]) {
     if (!commandOk(tool, ["--version"])) throw new Error(`build tool missing: ${tool}`);
   }
   const args = ["-B", "build"];
-  if (backend === "vulkan" && commandOk("glslc", ["--version"])) {
-    args.push("-DGGML_VULKAN=ON");
+  if (backendDef(backend).id === "vulkan" && commandOk("glslc", ["--version"])) args.push("-DGGML_VULKAN=ON");
+  if (backendDef(backend).id === "cuda-12.8" || backendDef(backend).id === "cuda-13.4") {
+    args.push("-DGGML_CUDA=ON");
   }
-  console.log(`cmake ${args.join(" ")} (llama.cpp/) ...`);
-  execFileSync("cmake", args, { cwd: src, stdio: "inherit" });
+  opts.onProgress?.({ phase: "build", label: "configuring with cmake" });
+  execFileSync("cmake", args, { cwd: src, stdio: "ignore" });
   const nproc = (() => {
     try {
       return execFileSync("nproc", [], { encoding: "utf8" }).trim();
@@ -385,15 +355,28 @@ function cmakeBuild(backend: Backend): string {
       return "4";
     }
   })();
-  console.log("compiling llama-server (this takes a while) ...");
+  opts.onProgress?.({ phase: "build", label: "compiling llama-server, this takes a while" });
   execFileSync("cmake", ["--build", "build", "--config", "Release", "-j", nproc, "--target", "llama-server"], {
     cwd: src,
-    stdio: "inherit",
+    stdio: "ignore",
   });
   const bin = join(src, "build", "bin", "llama-server");
   if (!verifyBinary(bin, backend)) throw new Error("compiled binary failed verification");
+  const receipt: Receipt = {
+    tag: "source",
+    backend,
+    binary: bin,
+    arch: currentArch(),
+    platform: currentPlatform(),
+    installedAt: new Date().toISOString(),
+  };
+  mkdirSync(serverInstallDir(), { recursive: true });
+  writeFileSync(receiptPath(), JSON.stringify(receipt, null, 2) + "\n", "utf8");
+  opts.onProgress?.({ phase: "done", label: "compiled llama-server", fraction: 1 });
   return bin;
 }
+
+// -- non-interactive entry ------------------------------------------------
 
 export interface InstallOptions {
   backend: Backend | "auto";
@@ -401,29 +384,45 @@ export interface InstallOptions {
   force?: boolean;
   noBuild?: boolean;
   yes?: boolean;
+  onProgress?: ProgressFn;
+  signal?: AbortSignalLike;
 }
 
-const VALID_BACKENDS: Array<Backend | "auto"> = ["auto", "cpu", "vulkan", "cuda", "rocm"];
-
-// Show the hardware survey + proposal and let the user override.
-// Skipped with --backend, --yes, or a non-interactive stdin.
-export async function confirmBackend(hw: Hardware, proposal: BackendProposal, opts: InstallOptions): Promise<Backend> {
+/** Show the hardware survey and let the user override; skipped with --backend. */
+export async function confirmBackend(
+  hw: Hardware,
+  proposal: BackendProposal,
+  opts: InstallOptions,
+): Promise<Backend> {
   console.log(describeHardware(hw));
   for (const w of proposal.warnings) console.log(`warn: ${w}`);
-  console.log(`proposed backend: ${proposal.backend} (${proposal.reasons.join("; ")})`);
+  console.log(`proposed backend: ${backendLabel(proposal.backend)} (${proposal.reasons.join("; ")})`);
   if (opts.backend !== "auto") return opts.backend;
   if (opts.yes || !process.stdin.isTTY) return proposal.backend;
-  const answer = await new Promise<string>((resolve) => {
+  const options = Object.values(backendDefAll()).filter((id) => id !== "source");
+  const answer = await new Promise<string>((resolve_) => {
     const rl = createInterface({ input: process.stdin, output: process.stdout });
-    rl.question(`Use ${proposal.backend}? [Y/n or cuda|vulkan|cpu|rocm] `, (a) => {
+    rl.question(`Use ${proposal.backend}? [Y/n or ${options.join("|")}] `, (a) => {
       rl.close();
-      resolve(a.trim().toLowerCase());
+      resolve_(a.trim().toLowerCase());
     });
   });
   if (answer === "" || answer === "y" || answer === "yes") return proposal.backend;
-  if (answer === "cuda" || answer === "vulkan" || answer === "cpu" || answer === "rocm") return answer;
+  if (isBackend(answer)) return answer;
   console.log("keeping it simple: cpu");
   return "cpu";
+}
+
+function backendDefAll(): Record<string, Backend> {
+  return Object.fromEntries(
+    (["cpu", "vulkan", "cuda-12.8", "cuda-13.4", "rocm", "sycl-fp16", "sycl-fp32", "openvino", "metal"] as Backend[]).map(
+      (id) => [id, id],
+    ),
+  );
+}
+
+function isBackend(value: string): value is Backend {
+  return value in backendDefAll();
 }
 
 export async function runInstaller(opts: InstallOptions): Promise<string> {
@@ -431,39 +430,33 @@ export async function runInstaller(opts: InstallOptions): Promise<string> {
   if (!opts.force) {
     const existing = readReceipt();
     if (existing) {
-      console.log(`already installed: ${existing.binary} (${existing.tag}/${existing.backend})`);
+      opts.onProgress?.({ phase: "done", label: `already installed: ${existing.binary}` });
       return existing.binary;
     }
   }
   const hw = detectHardware();
   const backend = await confirmBackend(hw, proposeBackend(hw), opts);
-  console.log(`backend: ${backend}`);
-  const backends: Backend[] = backend === "cpu" ? ["cpu"] : [backend, "cpu"];
-  for (const b of backends) {
-    try {
-      const bin = await tryDownload(b, opts.tag);
-      console.log(`installed: ${bin}`);
-      return bin;
-    } catch (err) {
-      console.log(`download (${b}) failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
+  try {
+    const result = await provision(backend, opts);
+    return result.binary;
+  } catch (err) {
+    if (opts.noBuild || (err instanceof Error && err.name === "AbortError")) throw err;
+    opts.onProgress?.({ phase: "build", label: "no prebuilt build worked, falling back to a local compile" });
+    return cmakeBuild("cpu", { onProgress: opts.onProgress, signal: opts.signal });
   }
-  if (opts.noBuild) throw new Error("downloads failed and --no-build skips compilation");
-  const bin = cmakeBuild("cpu");
-  console.log(`compiled: ${bin}`);
-  return bin;
 }
 
-function parseArgs(argv: string[]): InstallOptions {
+export function parseArgs(argv: string[]): InstallOptions {
   const opts: InstallOptions = { backend: "auto" };
+  const all = [...Object.keys(backendDefAll()), "source"] as string[];
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === "--backend" && argv[i + 1]) {
-      const b = argv[i + 1] as string;
-      if ((VALID_BACKENDS as string[]).includes(b)) opts.backend = b as Backend | "auto";
+      const b = argv[i + 1];
+      if (b === "auto" || all.includes(b)) opts.backend = b as Backend | "auto";
       i += 1;
     } else if (a === "--tag" && argv[i + 1]) {
-      opts.tag = argv[i + 1] as string;
+      opts.tag = argv[i + 1];
       i += 1;
     } else if (a === "--force") {
       opts.force = true;
@@ -477,5 +470,10 @@ function parseArgs(argv: string[]): InstallOptions {
 }
 
 if (import.meta.main) {
-  await runInstaller(parseArgs(process.argv.slice(2)));
+  const opts = parseArgs(process.argv.slice(2));
+  opts.onProgress = (p) => {
+    const pct = p.fraction !== undefined ? ` ${Math.round(p.fraction * 100)}%` : "";
+    console.log(`[${p.phase}] ${p.label}${pct}`);
+  };
+  await runInstaller(opts);
 }

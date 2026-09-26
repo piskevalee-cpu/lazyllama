@@ -1,6 +1,9 @@
 // lazyllama entry: hub-first boot (pick model -> configure -> confirm),
 // then the managed llama-server lifecycle and streaming chat.
 
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   defaultConfig,
   loadPreset,
@@ -17,6 +20,33 @@ import { runUi, type ChatView, type HubControl } from "./ui.js";
 
 function isAbortError(err: unknown): boolean {
   return err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError");
+}
+
+const USAGE = `lazyllama — a keyboard-first terminal client for a local llama-server
+
+  bun run dev [options]
+
+  --model <file|hf:user/repo>   skip the model picker and open the config editor
+  --ctx <tokens>                 context window size
+  --port <port>                  server port (default 8080)
+  --host <host>                  server bind address
+  --no-mouse                     turn off mouse reporting (LAZYLLAMA_NO_MOUSE=1 does the same)
+  --help                         this text
+  --version                      the installed version
+
+Models come from LAZYLLAMA_MODELS_DIR, then the directory chosen by
+\`bun run install\` (default ~/lazyllama-models), then ./models.
+Run \`bun run install\` to provision a llama-server and put lazyllama on PATH.
+`;
+
+function packageVersion(): string {
+  try {
+    return (JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8")) as {
+      version?: string;
+    }).version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
 }
 
 function parseArgv(argv: string[]): Partial<LaunchConfig> & { modelFlag?: string; mouse?: boolean } {
@@ -44,7 +74,16 @@ function parseArgv(argv: string[]): Partial<LaunchConfig> & { modelFlag?: string
 }
 
 async function main(): Promise<void> {
-  const flags = parseArgv(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  if (argv.includes("--help") || argv.includes("-h")) {
+    console.log(USAGE);
+    return;
+  }
+  if (argv.includes("--version") || argv.includes("-V")) {
+    console.log(packageVersion());
+    return;
+  }
+  const flags = parseArgv(argv);
   let cfg: LaunchConfig = defaultConfig();
   if (flags.modelFlag) {
     const m = flags.modelFlag;

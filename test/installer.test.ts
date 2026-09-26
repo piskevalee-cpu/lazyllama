@@ -1,53 +1,105 @@
-// Installer + model-scan tests. Network-touching paths (fetchReleases,
-// downloads, cmake) are NOT tested here; only pure selection logic.
+// Server provisioning logic that can run offline: where the receipt lives,
+// how a binary is found in an unpacked release, and the untouched local model
+// scan. The download, extract, verify and compile paths are never run here.
 
-import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  describeHardware,
-  isBinaryTag,
-  latestBinaryTag,
-  parseLspci,
-  parseNvidiaDriverVersion,
-  parseOsRelease,
-  parseVulkanDevices,
-  pickAsset,
-  proposeBackend,
-  type Hardware,
-  type ReleaseAsset,
-} from "../src/installer.ts";
-import { scanLocalModels } from "../src/models.ts";
+import { findServerBinary, readReceipt, receiptPath, serverInstallDir } from "../src/installer.ts";
 import { LAZYLLAMA_LOGO } from "../src/logo.ts";
+import { defaultModelsDir, scanLocalModels } from "../src/models.ts";
 
-const assets: ReleaseAsset[] = [
-  { name: "llama-b11163-bin-ubuntu-x64.tar.gz", url: "https://x/cpu" },
-  { name: "llama-b11163-bin-ubuntu-vulkan-x64.tar.gz", url: "https://x/vk" },
-  { name: "cudart-llama-b11163-bin-ubuntu-cuda-12.8-x64.tar.gz", url: "https://x/cu" },
-  { name: "llama-b11163-bin-ubuntu-rocm-10.0-x64.tar.gz", url: "https://x/rocm" },
-  { name: "llama-b11163-bin-win-cpu-x64.zip", url: "https://x/win" },
-];
+let config: string;
+let dataHome: string;
+beforeEach(() => {
+  config = mkdtempSync(join(tmpdir(), "lazyllama-installer-"));
+  dataHome = mkdtempSync(join(tmpdir(), "lazyllama-data-"));
+  process.env["LAZYLLAMA_CONFIG_DIR"] = config;
+  process.env["XDG_DATA_HOME"] = dataHome;
+});
+afterEach(() => {
+  delete process.env["LAZYLLAMA_CONFIG_DIR"];
+  delete process.env["XDG_DATA_HOME"];
+  rmSync(config, { recursive: true, force: true });
+  rmSync(dataHome, { recursive: true, force: true });
+});
 
-describe("release tags", () => {
-  test("only bNNNN tags qualify (vX.Y has no binaries)", () => {
-    expect(isBinaryTag("b11163")).toBe(true);
-    expect(isBinaryTag("v0.5.0")).toBe(false);
-    expect(latestBinaryTag(["v0.5.0", "b11163", "b11160"])).toBe("b11163");
-    expect(latestBinaryTag(["v0.5.0"])).toBeUndefined();
+describe("install locations", () => {
+  test("the receipt and the server tree live under the XDG data dir", () => {
+    expect(serverInstallDir()).toBe(join(dataHome, "lazyllama", "server"));
+    expect(receiptPath()).toBe(join(serverInstallDir(), ".installed.json"));
   });
 });
 
-describe("asset picking", () => {
-  test("cpu skips gpu/spiced variants", () => {
-    expect(pickAsset(assets, "cpu")?.url).toBe("https://x/cpu");
+describe("receipt", () => {
+  test("is absent until something is installed", () => {
+    expect(readReceipt()).toBeUndefined();
   });
-  test("vulkan and cuda resolve", () => {
-    expect(pickAsset(assets, "vulkan")?.url).toBe("https://x/vk");
-    expect(pickAsset(assets, "cuda")?.url).toBe("https://x/cu");
+
+  test("a receipt pointing at a missing binary is ignored", () => {
+    mkdirSync(serverInstallDir(), { recursive: true });
+    writeFileSync(receiptPath(), JSON.stringify({ tag: "b1", backend: "cpu", binary: "/gone/llama-server" }));
+    expect(readReceipt()).toBeUndefined();
   });
-  test("missing backend returns undefined", () => {
-    expect(pickAsset([], "cpu")).toBeUndefined();
+
+  test("a receipt with a live binary reports the recorded slice", () => {
+    mkdirSync(serverInstallDir(), { recursive: true });
+    const binary = join(serverInstallDir(), "llama-server");
+    writeFileSync(binary, "#!/bin/sh\n");
+    writeFileSync(
+      receiptPath(),
+      JSON.stringify({
+        tag: "b11200",
+        backend: "vulkan",
+        binary,
+        arch: "x64",
+        platform: "linux",
+        installedAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    expect(readReceipt()).toEqual({
+      tag: "b11200",
+      backend: "vulkan",
+      binary,
+      arch: "x64",
+      platform: "linux",
+      installedAt: "2026-01-01T00:00:00.000Z",
+    });
+  });
+
+  test("a corrupt receipt is treated as no receipt", () => {
+    mkdirSync(serverInstallDir(), { recursive: true });
+    writeFileSync(receiptPath(), "{ truncated");
+    expect(readReceipt()).toBeUndefined();
+  });
+
+  test("an older receipt without the new fields still resolves", () => {
+    mkdirSync(serverInstallDir(), { recursive: true });
+    const binary = join(serverInstallDir(), "llama-server");
+    writeFileSync(binary, "#!/bin/sh\n");
+    writeFileSync(receiptPath(), JSON.stringify({ tag: "b1", backend: "cpu", binary }));
+    const receipt = readReceipt();
+    expect(receipt?.binary).toBe(binary);
+    expect(receipt?.arch.length).toBeGreaterThan(0);
+    expect(receipt?.platform.length).toBeGreaterThan(0);
+  });
+});
+
+describe("binary discovery", () => {
+  test("walks a release tree to find llama-server", () => {
+    const root = join(config, "release");
+    mkdirSync(join(root, "build", "bin"), { recursive: true });
+    writeFileSync(join(root, "build", "bin", "llama-cli"), "x");
+    writeFileSync(join(root, "build", "bin", "llama-server"), "x");
+    expect(findServerBinary(root)).toBe(join(root, "build", "bin", "llama-server"));
+  });
+
+  test("a missing or empty tree finds nothing instead of throwing", () => {
+    expect(findServerBinary(join(config, "nope"))).toBeUndefined();
+    const empty = join(config, "empty");
+    mkdirSync(empty, { recursive: true });
+    expect(findServerBinary(empty)).toBeUndefined();
   });
 });
 
@@ -66,89 +118,13 @@ describe("local model scan", () => {
   test("missing dir scans empty", () => {
     expect(scanLocalModels(join(tmpdir(), "lazyllama-nope-xyz"))).toEqual([]);
   });
+  test("no settings means the repo-relative models directory", () => {
+    expect(defaultModelsDir()).toBe(join(process.cwd(), "models"));
+  });
 });
 
 describe("logo", () => {
   test("block wordmark art is non-empty", () => {
     expect(LAZYLLAMA_LOGO).toContain("██╗");
-  });
-});
-
-const INTEL_LSPCI =
-  "00:02.0 VGA compatible controller [0300]: Intel Corporation Alder Lake-UP3 GT2 [Iris Xe Graphics] [8086:46a8] (rev 0c)";
-const NVIDIA_LSPCI =
-  "01:00.0 VGA compatible controller [0300]: NVIDIA Corporation GA104 [GeForce RTX 3070] [10de:2484] (rev a1)";
-const AMD_LSPCI =
-  "03:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. [AMD/ATI] Navi 31 [Radeon RX 7900 XTX] [1002:744c] (rev c8)";
-
-function hw(partial: Partial<Hardware>): Hardware {
-  return {
-    prettyOs: "Arch Linux",
-    arch: "x64",
-    gpus: [],
-    hasVulkanLoader: false,
-    vulkanDevices: [],
-    cpuFlags: ["avx2"],
-    ...partial,
-  };
-}
-
-describe("hardware parsers", () => {
-  test("os-release pretty name", () => {
-    expect(parseOsRelease('NAME="Omarchy"\nPRETTY_NAME="Omarchy"\nID=omarchy\nID_LIKE=arch\n')).toBe("Omarchy");
-  });
-  test("lspci vendor ids", () => {
-    expect(parseLspci(INTEL_LSPCI)).toEqual([{ vendor: "intel", name: expect.stringContaining("Iris Xe") }]);
-    expect(parseLspci(`${NVIDIA_LSPCI}\n${AMD_LSPCI}`).map((g) => g.vendor)).toEqual(["nvidia", "amd"]);
-    expect(parseLspci("00:1f.3 Audio device [0403]: Intel [8086:51c8]")).toEqual([]);
-  });
-  test("nvidia driver major", () => {
-    expect(parseNvidiaDriverVersion("565.57.01\n")).toBe(565);
-    expect(parseNvidiaDriverVersion("")).toBeUndefined();
-  });
-  test("vulkan device names", () => {
-    expect(parseVulkanDevices("\tdeviceName         = Intel(R) Iris(R) Xe Graphics (ADL GT2)\n")).toEqual([
-      "Intel(R) Iris(R) Xe Graphics (ADL GT2)",
-    ]);
-  });
-});
-
-describe("backend proposal", () => {
-  test("fresh nvidia driver -> cuda", () => {
-    const p = proposeBackend(hw({ gpus: [{ vendor: "nvidia", name: "RTX 3070" }], nvidiaDriverMajor: 570 }));
-    expect(p.backend).toBe("cuda");
-  });
-  test("stale nvidia driver warns and falls through", () => {
-    const p = proposeBackend(hw({ gpus: [{ vendor: "nvidia", name: "RTX 3070" }], nvidiaDriverMajor: 535 }));
-    expect(p.backend).toBe("cpu");
-    expect(p.warnings.join(" ")).toContain("535");
-  });
-  test("intel igpu with vulkan devices -> vulkan", () => {
-    const p = proposeBackend(
-      hw({
-        gpus: [{ vendor: "intel", name: "Iris Xe" }],
-        hasVulkanLoader: true,
-        vulkanDevices: ["Intel(R) Iris(R) Xe Graphics (ADL GT2)"],
-      }),
-    );
-    expect(p.backend).toBe("vulkan");
-    expect(p.reasons.join(" ")).toContain("Iris");
-  });
-  test("amd discrete without enumerated devices but loader present -> vulkan", () => {
-    const p = proposeBackend(hw({ gpus: [{ vendor: "amd", name: "RX 7900 XTX" }], hasVulkanLoader: true }));
-    expect(p.backend).toBe("vulkan");
-  });
-  test("apple silicon -> cpu build (metal included)", () => {
-    const p = proposeBackend(hw({ prettyOs: "macOS", gpus: [{ vendor: "apple", name: "Apple Silicon (Metal)" }] }));
-    expect(p.backend).toBe("cpu");
-  });
-  test("nothing -> cpu with simd note", () => {
-    const p = proposeBackend(hw({}));
-    expect(p.backend).toBe("cpu");
-    expect(p.reasons.join(" ")).toContain("avx2");
-  });
-  test("describeHardware prints a readable survey", () => {
-    const s = describeHardware(hw({ gpus: [{ vendor: "intel", name: "Iris Xe" }], hasVulkanLoader: true }));
-    expect(s).toContain("GPU: [intel] Iris Xe");
   });
 });

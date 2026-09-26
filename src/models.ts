@@ -3,11 +3,14 @@
 
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { resolveModelsDir } from "./settings.js";
 
+/**
+ * Where .gguf files live: LAZYLLAMA_MODELS_DIR, then the installer's choice in
+ * ~/.config/lazyllama/settings.json, then ./models so a fresh clone works.
+ */
 export function defaultModelsDir(): string {
-  const fromEnv = process.env["LAZYLLAMA_MODELS_DIR"];
-  if (fromEnv && fromEnv.length > 0) return fromEnv;
-  return join(process.cwd(), "models");
+  return resolveModelsDir();
 }
 
 export interface LocalModel {
