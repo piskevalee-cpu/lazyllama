@@ -80,25 +80,34 @@ describe("OpenCode-derived renderer configuration", () => {
   });
 });
 
+function greyValue(hex: string): number {
+  return Number.parseInt(hex.slice(1, 3), 16);
+}
+
+function isGrey(hex: string): boolean {
+  const r = Number.parseInt(hex.slice(1, 3), 16);
+  const g = Number.parseInt(hex.slice(3, 5), 16);
+  const b = Number.parseInt(hex.slice(5, 7), 16);
+  return r === g && g === b;
+}
+
 describe("OpenCode-derived theme configuration", () => {
-  test("themes match OpenCode's carbonfox palette", () => {
-    expect(DARK_THEME.background).toBe("#161616");
-    expect(DARK_THEME.panel).toBe("#1a1a1a");
-    expect(DARK_THEME.element).toBe("#1e1e1e");
-    expect(DARK_THEME.text).toBe("#f2f4f8");
-    expect(DARK_THEME.muted).toBe("#7d848f");
-    expect(DARK_THEME.border).toBe("#303030");
-    expect(DARK_THEME.borderActive).toBe("#33b1ff");
-    expect(DARK_THEME.primary).toBe("#33b1ff");
-    expect(DARK_THEME.accent).toBe("#ff7eb6");
-    expect(DARK_THEME.success).toBe("#25be6a");
-    expect(DARK_THEME.warning).toBe("#f1c21b");
-    expect(DARK_THEME.error).toBe("#ee5396");
-    expect(DARK_THEME.info).toBe("#78a9ff");
+  test("the palette is monochrome black, white and a grey ramp", () => {
+    expect(DARK_THEME.background).toBe("#000000");
+    expect(DARK_THEME.text).toBe("#ffffff");
+    expect(DARK_THEME.accent).toBe("#ffffff");
+    // Surfaces climb the grey ramp: panel < element < border < muted.
+    const ramp = [DARK_THEME.panel, DARK_THEME.element, DARK_THEME.border, DARK_THEME.muted];
+    for (let i = 1; i < ramp.length; i += 1) {
+      expect(greyValue(ramp[i - 1]!)).toBeLessThan(greyValue(ramp[i]!));
+    }
+    expect(DARK_THEME.meter).toEqual(["#ffffff", "#b4b4b4", "#6e6e6e"]);
+    for (const stop of [...DARK_THEME.meter, DARK_THEME.meterTrack, DARK_THEME.borderActive]) {
+      expect(isGrey(stop)).toBe(true);
+    }
     expect(LIGHT_THEME.background).toBe("#ffffff");
-    expect(LIGHT_THEME.panel).toBe("#f4f4f4");
-    expect(LIGHT_THEME.text).toBe("#161616");
-    expect(LIGHT_THEME.accent).toBe("#9f1853");
+    expect(LIGHT_THEME.text).toBe("#0a0a0a");
+    expect(isGrey(LIGHT_THEME.meter[0]!)).toBe(true);
   });
 
   test("missing theme mode falls back to dark", () => {

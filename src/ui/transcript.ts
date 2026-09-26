@@ -13,7 +13,8 @@ import { activityFrame } from "./spinner.js";
 import type { UiTheme } from "./theme.js";
 import type { AssistantResult } from "./types.js";
 
-const THINKING_TICK_MS = 120;
+// OpenCode's spinner cadence (component/spinner.tsx).
+const THINKING_TICK_MS = 80;
 const THROTTLE_MS = 33;
 
 export interface TranscriptOptions {
@@ -453,8 +454,10 @@ export class Transcript {
     const started =
       entry.reasoningAt !== undefined || entry.text.length > 0 || entry.pendingAnswer.length > 0;
     if (!started) return;
-    this.clearTicker(entry);
     entry.placeholder.visible = false;
+    // The ticker keeps running while reasoning streams: it now animates the
+    // thought header instead of the placeholder.
+    if (entry.text.length > 0 || entry.pendingAnswer.length > 0) this.clearTicker(entry);
   }
 
   private pushThinking(entry: AssistantEntry, token: string): void {
@@ -523,7 +526,9 @@ export class Transcript {
 
   private thinkingHeader(entry: AssistantEntry): string {
     const duration = this.thoughtDuration(entry);
-    if (duration === undefined) return "▸ thinking…";
+    // Same 10-frame Braille spinner OpenCode uses (component/spinner.tsx), at
+    // its 80ms cadence, so the animation lives next to the answer.
+    if (duration === undefined) return `${activityFrame(entry.ticks)} thinking…`;
     const marker = entry.thinking?.expanded === true ? "▾" : "▸";
     return duration > 0 ? `${marker} Thought for ${formatThinkingDuration(duration)}` : `${marker} Thought`;
   }
@@ -540,9 +545,15 @@ export class Transcript {
     if (entry.ticker !== null) return;
     entry.ticker = setInterval(() => {
       this.syncPlaceholder(entry);
-      if (!entry.placeholder.visible) return;
       entry.ticks += 1;
-      entry.placeholder.content = `${activityFrame(entry.ticks)} thinking`;
+      if (entry.placeholder.visible) {
+        entry.placeholder.content = `${activityFrame(entry.ticks)} thinking`;
+        return;
+      }
+      // Reasoning is streaming: keep the thought header spinning.
+      if (entry.thinking !== null && this.thoughtDuration(entry) === undefined) {
+        entry.thinking.header.content = this.thinkingHeader(entry);
+      }
     }, THINKING_TICK_MS);
   }
 

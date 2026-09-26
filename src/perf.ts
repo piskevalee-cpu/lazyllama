@@ -53,6 +53,59 @@ export interface ServerStats {
   tokPerSec?: number;
   promptTokens?: number;
   activeSlots?: number;
+  /** Live KV footprint of the watched slot: prompt tokens plus generated. */
+  slotContext?: SlotContext;
+}
+
+export interface SlotContext {
+  used: number;
+  total?: number;
+  processing: boolean;
+}
+
+// Read one slot's live context. Field names differ between llama-server builds,
+// so every candidate is optional and the caller falls back to turn timings.
+// Pure so the parsing stays unit-testable.
+export function readSlotContext(payload: unknown, slotId = 0): SlotContext | undefined {
+  if (!Array.isArray(payload)) return undefined;
+  const slot = payload[slotId];
+  if (slot === null || typeof slot !== "object") return undefined;
+  const rec = slot as Record<string, unknown>;
+  const number = (...keys: string[]): number | undefined => {
+    for (const key of keys) {
+      const value = rec[key];
+      if (typeof value === "number") return value;
+    }
+    return undefined;
+  };
+  // `next_token` is an object in newer builds and a one-element array in older
+  // ones, so both shapes are read before falling back to the flat field names.
+  const nextToken = rec["next_token"];
+  const nextCandidates: unknown[] = Array.isArray(nextToken)
+    ? nextToken
+    : typeof nextToken === "object" && nextToken !== null
+      ? [nextToken]
+      : [];
+  const generated =
+    nextCandidates
+      .map((entry) => (entry as Record<string, unknown>)["n_decoded"])
+      .find((value): value is number => typeof value === "number") ??
+    number("n_decoded", "tokens_predicted");
+  const promptTokens =
+    number("n_prompt_tokens") ??
+    (() => {
+      const processed = number("n_prompt_tokens_processed") ?? 0;
+      const cache = number("n_prompt_tokens_cache") ?? 0;
+      return processed + cache > 0 ? processed + cache : undefined;
+    })();
+  const total = number("n_ctx");
+  if (promptTokens === undefined && total === undefined) return undefined;
+  const used = (promptTokens ?? 0) + (generated ?? 0);
+  return {
+    used,
+    total: total !== undefined && total > 0 ? total : undefined,
+    processing: rec["is_processing"] === true,
+  };
 }
 
 // Best-effort read of the slots endpoint (enabled by default on the
@@ -62,7 +115,8 @@ export async function fetchServerStats(baseUrl: string): Promise<ServerStats> {
   try {
     const res = await fetch(`${baseUrl}/slots`);
     if (!res.ok) return {};
-    const slots = (await res.json()) as Array<{
+    const payload = (await res.json()) as unknown;
+    const slots = payload as Array<{
       n_tokens_predicted?: number;
       t_tokens_generation_ms?: number;
       is_processing?: boolean;
@@ -79,6 +133,7 @@ export async function fetchServerStats(baseUrl: string): Promise<ServerStats> {
     const out: ServerStats = { activeSlots: active };
     if (ms > 0) out.tokPerSec = (tokens / ms) * 1000;
     if (tokens > 0) out.promptTokens = tokens;
+    out.slotContext = readSlotContext(payload);
     return out;
   } catch {
     return {};

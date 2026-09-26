@@ -2,6 +2,7 @@
 // Renderer behavior is covered separately in test/ui.test.ts.
 
 import { describe, expect, test } from "bun:test";
+import { readSlotContext } from "../src/perf.ts";
 import {
   CONFIG_FIELDS,
   CONFIG_GROUP_ORDER,
@@ -117,6 +118,32 @@ describe("ascii helpers", () => {
   });
   test("thinking dots stays 3 wide", () => {
     for (let i = 0; i < 8; i += 1) expect(thinkingDots(i).length).toBe(3);
+  });
+});
+
+describe("live slot context", () => {
+  test("reads prompt plus generated tokens from a slots payload", () => {
+    const payload = [
+      {
+        id: 0,
+        n_ctx: 8192,
+        is_processing: true,
+        n_prompt_tokens: 300,
+        n_prompt_tokens_processed: 40,
+        n_prompt_tokens_cache: 260,
+        next_token: { n_decoded: 25 },
+      },
+    ];
+    expect(readSlotContext(payload)).toEqual({ used: 325, total: 8192, processing: true });
+  });
+
+  test("falls back to alternative field names and stays defensive", () => {
+    expect(
+      readSlotContext([{ n_ctx: 4096, n_prompt_tokens: 100, n_decoded: 7, is_processing: false }]),
+    ).toEqual({ used: 107, total: 4096, processing: false });
+    expect(readSlotContext([{}])).toBeUndefined();
+    expect(readSlotContext([])).toBeUndefined();
+    expect(readSlotContext("nope")).toBeUndefined();
   });
 });
 

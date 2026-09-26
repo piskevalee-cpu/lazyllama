@@ -163,9 +163,14 @@ under the prompt. LazyLlama now matches that:
   persisted in `configDir()/ui-flags.json`. It is a chat-only surface:
   `ChatScreen.hide()` deactivates it, so the splash, model picker and config
   editor get the full terminal width.
-- Panel sections are Context (tokens, percent, bar, limit), Model, Server, and
-  System, each folding with `▸`/`▾`; the old fixed perf column and the footer
-  context bar are gone. Sampling values the user switched off show as `off`.
+- Panel sections are Context (`context size`, `used`, gradient meter), Model,
+  Server and System, each folding with `▸`/`▾`; the old fixed perf column and
+  the footer context bar are gone. Model has no `ctx` row because Context owns
+  the window size, and System reuses the same meter with a percentage for every
+  core. Sampling values the user switched off show as `off`.
+- The context meter is live: `readSlotContext()` reads `/slots` (prompt tokens
+  plus generated) once a second, so `used` climbs while the model generates and
+  the exact `timings` total replaces it when the turn completes.
 - The prompt footer row shows the busy spinner or model hint on the left and
   `esc interrupt` (or `esc again to interrupt` once armed) plus the compact
   `12.3K (45%)` context readout on the right.
@@ -203,13 +208,12 @@ arrow-down walks every field and action end to end.
 
 ## Theme
 
-`src/ui/theme.ts` ports OpenCode's `carbonfox` theme
-(`packages/tui/src/theme/assets/carbonfox.json`) onto LazyLlama's smaller token
-set: `background #161616`, `backgroundPanel` → `panel #1a1a1a`,
-`backgroundElement` → `element #1e1e1e` (the prompt box), `text #f2f4f8`,
-`textMuted` → `muted #7d848f`, `border #303030`, `primary`/`borderActive`
-`#33b1ff` and `accent #ff7eb6`. The light variant maps the same tokens onto
-`#ffffff`/`#f4f4f4` with the deep blue `#0043ce` primary.
+`src/ui/theme.ts` is deliberately monochrome rather than a port: black and
+white over a grey ramp (`#000000` → `#0a0a0a` → `#141414` → `#262626` →
+`#8c8c8c`), so the palette came off OpenCode entirely. Two extra tokens drive
+the meters: `meter` is a three-step white-to-grey ramp and `meterTrack` the dim
+track. A `SidebarRow` with a `bar` paints its fill as three `StyledText` chunks
+that fade through the ramp, which is where the "gradient" reads on screen.
 
 ## Message list, scrolling, and mouse
 

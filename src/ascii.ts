@@ -1,7 +1,7 @@
 // Pure progress helpers. Glyphs render through OpenTUI Text renderables.
 
-const BLOCK_FULL = "█";
-const BLOCK_EMPTY = "░";
+export const BLOCK_FULL = "█";
+export const BLOCK_EMPTY = "░";
 
 export function hbar(frac: number, width = 20): string {
   const clamped = Math.min(1, Math.max(0, frac));

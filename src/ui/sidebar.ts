@@ -6,8 +6,9 @@ import {
   fg,
   type CliRenderer,
   type Renderable,
+  type TextChunk,
 } from "@opentui/core";
-import { hbar, pct } from "../ascii.js";
+import { BLOCK_EMPTY, BLOCK_FULL, pct } from "../ascii.js";
 import { SIDEBAR_WIDTH, type SidebarMode } from "./layout.js";
 import type { UiTheme } from "./theme.js";
 
@@ -58,12 +59,10 @@ const UNKNOWN = "--";
 // whenever the content overflows, so rows are laid out for the narrower box and
 // never clip on the first overflowing frame.
 const FULL_WIDTH = SIDEBAR_WIDTH - 6;
-const LABEL_WIDTH = 9;
-const VALUE_WIDTH = FULL_WIDTH - LABEL_WIDTH;
-const CONTEXT_BAR_WIDTH = 24;
-const METER_BAR_WIDTH = 12;
-const CORE_BAR_WIDTH = 10;
-const MAX_CORES = 8;
+const LABEL_WIDTH = 13;
+const METER_GAP = 2;
+const METER_WIDTH = 10;
+const VALUE_WIDTH = FULL_WIDTH - LABEL_WIDTH - METER_GAP - METER_WIDTH;
 const CURSOR_SLOT = "❯ ";
 const IDLE_CURSOR_SLOT = "  ";
 const EXPANDED_MARKER = "▾";
@@ -78,6 +77,8 @@ export interface SidebarRow {
   tone?: RowTone;
   /** Bar and overflow rows span the panel instead of using the label column. */
   wide?: boolean;
+  /** 0..1 fill for the gradient meter drawn after the value. */
+  bar?: number;
 }
 
 export function formatCount(n: number): string {
@@ -105,20 +106,20 @@ export function formatContextRows(context: SidebarData["context"]): SidebarRow[]
   const knownTotal = context.total !== undefined && context.total > 0 ? context.total : undefined;
   const used = context.used;
   const fraction = sidebarContextFraction(context);
-  const rows: SidebarRow[] = [
-    { label: "Context", value: used === undefined ? UNKNOWN : `${formatCount(used)} tokens` },
+  return [
+    { label: "context size", value: knownTotal === undefined ? UNKNOWN : formatCount(knownTotal) },
     {
       label: "used",
-      value: used === undefined || knownTotal === undefined ? UNKNOWN : pct(fraction),
+      value: used === undefined ? UNKNOWN : formatCount(used),
+      tone: used === undefined ? "muted" : "text",
     },
     {
       label: "",
-      value: used === undefined || knownTotal === undefined ? UNKNOWN : hbar(fraction, CONTEXT_BAR_WIDTH),
+      value: knownTotal === undefined ? UNKNOWN : pct(fraction),
+      bar: fraction,
       wide: true,
     },
   ];
-  if (knownTotal !== undefined) rows.push({ label: "limit", value: formatCount(knownTotal) });
-  return rows;
 }
 
 function optionalValue(value: number | null): string {
@@ -129,7 +130,6 @@ export function formatModelRows(model: SidebarData["model"]): SidebarRow[] {
   return [
     { label: "name", value: model.name },
     { label: "source", value: model.source },
-    { label: "ctx", value: model.ctxSize > 0 ? String(model.ctxSize) : "model" },
     { label: "ngl", value: model.gpuLayers },
     { label: "temp", value: optionalValue(model.temp) },
     { label: "top-p", value: optionalValue(model.topP) },
@@ -158,16 +158,12 @@ export function formatServerRows(server: SidebarData["server"]): SidebarRow[] {
 
 export function formatSystemRows(system: SidebarData["system"]): SidebarRow[] {
   const memFrac = system.memTotalMiB > 0 ? system.memUsedMiB / system.memTotalMiB : 0;
-  const rows: SidebarRow[] = [
-    { label: "CPU", value: `${pct(system.cpuPct)} [${hbar(system.cpuPct, METER_BAR_WIDTH)}]` },
-  ];
-  system.perCorePct.slice(0, MAX_CORES).forEach((core, index) => {
-    rows.push({ label: `c${index}`, value: `[${hbar(core, CORE_BAR_WIDTH)}]` });
+  // Same gradient meter as the context block, with every core's percentage.
+  const rows: SidebarRow[] = [{ label: "CPU", value: pct(system.cpuPct), bar: system.cpuPct }];
+  system.perCorePct.forEach((core, index) => {
+    rows.push({ label: `c${index}`, value: pct(core), bar: core, tone: "muted" });
   });
-  if (system.perCorePct.length > MAX_CORES) {
-    rows.push({ label: "", value: `… +${system.perCorePct.length - MAX_CORES} cores`, wide: true });
-  }
-  rows.push({ label: "MEM", value: `${pct(memFrac)} [${hbar(memFrac, METER_BAR_WIDTH)}]` });
+  rows.push({ label: "MEM", value: pct(memFrac), bar: memFrac });
   rows.push({ label: "used", value: `${system.memUsedMiB} / ${system.memTotalMiB} MiB` });
   rows.push({ label: "load", value: system.load1.toFixed(2) });
   return rows;
@@ -477,9 +473,45 @@ export class SidePanel {
     }
   }
 
+  // A filled meter fades from the brightest ramp step to the dimmest, so the
+  // bar reads as a gradient instead of a flat block. Returns one chunk per
+  // ramp step, which is three chunks regardless of the fill.
+  private meterChunks(frac: number, width: number): TextChunk[] {
+    const clamped = Math.min(1, Math.max(0, frac));
+    const filled = Math.round(clamped * width);
+    const [bright, mid, dim] = this.theme.meter;
+    const ramp = [bright, mid, dim];
+    const chunks: TextChunk[] = [];
+    if (filled === 0) return [fg(this.theme.meterTrack)(BLOCK_EMPTY.repeat(width))];
+    for (let step = 0; step < ramp.length; step += 1) {
+      const from = Math.round((step * filled) / ramp.length);
+      const to = Math.round(((step + 1) * filled) / ramp.length);
+      if (to > from) chunks.push(fg(ramp[step]!)(BLOCK_FULL.repeat(to - from)));
+    }
+    if (filled < width) chunks.push(fg(this.theme.meterTrack)(BLOCK_EMPTY.repeat(width - filled)));
+    return chunks;
+  }
+
   private paintRow(text: TextRenderable, row: SidebarRow): void {
     const tone = row.tone ?? "text";
     const value = tone === "text" ? this.theme.text : tone === "accent" ? this.theme.accent : this.theme.muted;
+    if (row.bar !== undefined) {
+      // Wide meter rows carry their own percentage, then the bar spans the rest
+      // of the panel; labelled rows keep the label/value columns.
+      const chunks: TextChunk[] = [];
+      if (row.wide) {
+        chunks.push(fg(this.theme.muted)(truncate(row.value, 6).padEnd(6, " ")));
+        chunks.push(...this.meterChunks(row.bar, FULL_WIDTH - 6));
+      } else {
+        const label = truncate(row.label.padEnd(LABEL_WIDTH), LABEL_WIDTH);
+        chunks.push(fg(this.theme.muted)(label));
+        chunks.push(fg(value)(truncate(row.value, VALUE_WIDTH).padEnd(VALUE_WIDTH, " ")));
+        chunks.push(fg(this.theme.meterTrack)(" ".repeat(METER_GAP)));
+        chunks.push(...this.meterChunks(row.bar, METER_WIDTH));
+      }
+      text.content = new StyledText(chunks);
+      return;
+    }
     if (row.wide) {
       text.content = new StyledText([fg(this.theme.muted)(truncate(row.value, FULL_WIDTH))]);
       return;

@@ -237,7 +237,6 @@ export function createAppUi(
       .concat({ role: "user", content: text });
     chat.addUser(text);
     transcript.push({ role: "user", content: text });
-    chat.setPromptHint(modelDisplayName(cfg.model));
     inFlight = new AbortController();
     deps.onSend(request, chatView, inFlight.signal);
   }
@@ -303,6 +302,11 @@ export function createAppUi(
     shell.metaText.content = metaLine;
   }
 
+  // The prompt's left footer slot is the model's name, always visible.
+  function syncPromptHint(): void {
+    chat.setPromptHint(modelDisplayName(cfg.model));
+  }
+
   function syncSidebarModel(): void {
     chat.patchSidebarData({
       model: {
@@ -336,6 +340,7 @@ export function createAppUi(
     // Order matters: the meta text is resolved first so the reference can be
     // shortened to whatever space is actually left.
     renderMeta();
+    syncPromptHint();
     shell.hints.content = hintsFor(renderer.terminalWidth, screen, metaLine);
     if (screen === "edit") applyEditorDensity();
     syncSidebarModel();
@@ -550,6 +555,11 @@ export function createAppUi(
       chat.patchSidebarData({ system });
       void fetchServerStats(deps.getBaseUrl()).then((server) => {
         if (destroyed) return;
+        // The slot reports prompt + generated tokens, so the context meter can
+        // move while the model is still working, not only after a turn.
+        if (server.slotContext !== undefined) {
+          chat.setLiveContext(server.slotContext.used, server.slotContext.total);
+        }
         chat.patchSidebarData({
           server: {
             processing: server.activeSlots !== undefined ? server.activeSlots > 0 : false,

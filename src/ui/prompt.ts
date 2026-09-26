@@ -11,7 +11,6 @@ import {
 import { pct } from "../ascii.js";
 import { OPENCODE_EMPTY_BORDER, staticText, surface } from "./components.js";
 import { promptMaxHeight } from "./layout.js";
-import { activityFrame } from "./spinner.js";
 import type { UiTheme } from "./theme.js";
 
 export interface PromptEvents {
@@ -27,12 +26,10 @@ export interface PromptStatus {
   contextTotal?: number;
 }
 
-const SPINNER_INTERVAL_MS = 120;
 const WRAP_COLUMNS = 80;
 const PANEL_PADDING_TOP = 1;
 const FOOTER_PADDING_TOP = 1;
 const FOOTER_ROWS = FOOTER_PADDING_TOP + 1;
-const BUSY_WORD = "thinking";
 const UNKNOWN_CONTEXT = "--";
 // Stand-in for the terminal height until the orchestrator reports the real one.
 const DEFAULT_MAX_HEIGHT = promptMaxHeight(40);
@@ -79,13 +76,10 @@ export class PromptBox {
   private readonly panel: BoxRenderable;
   private readonly editor: TextareaRenderable;
   private readonly idleSlot: BoxRenderable;
-  private readonly busySlot: BoxRenderable;
+  private readonly busySlot!: BoxRenderable;
   private readonly hintText: TextRenderable;
-  private readonly spinnerText: TextRenderable;
   private readonly rightText: TextRenderable;
   private maxHeight: number;
-  private spinnerTimer: ReturnType<typeof setInterval> | null = null;
-  private spinnerTicks = 0;
   private status: PromptStatus = { busy: false, interruptArmed: false };
 
   constructor(
@@ -173,29 +167,9 @@ export class PromptBox {
     this.idleSlot.add(this.hintText);
     footer.add(this.idleSlot);
 
-    this.busySlot = new BoxRenderable(renderer, {
-      id: "prompt-left-busy",
-      flexDirection: "row",
-      gap: 1,
-      flexShrink: 0,
-      visible: false,
-    });
-    this.spinnerText = staticText(renderer, {
-      id: "prompt-spinner",
-      content: "",
-      fg: theme.text,
-      wrapMode: "none",
-    });
-    this.busySlot.add(this.spinnerText);
-    this.busySlot.add(
-      staticText(renderer, {
-        id: "prompt-busy-word",
-        content: BUSY_WORD,
-        fg: theme.muted,
-        wrapMode: "none",
-      }),
-    );
-    footer.add(this.busySlot);
+    // One permanent left slot: the model name never animates or disappears.
+    // The thinking animation lives in the transcript, next to the answer.
+    this.busySlot = this.idleSlot;
 
     this.rightText = staticText(renderer, {
       id: "prompt-right",
@@ -276,15 +250,7 @@ export class PromptBox {
   }
 
   setStatus(status: PromptStatus): void {
-    const wasBusy = this.status.busy;
     this.status = { ...status };
-    this.busySlot.visible = status.busy;
-    this.idleSlot.visible = !status.busy;
-    if (status.busy) {
-      if (!wasBusy) this.startSpinner();
-    } else {
-      this.stopSpinner();
-    }
     this.renderRight();
   }
 
@@ -303,7 +269,6 @@ export class PromptBox {
   }
 
   destroy(): void {
-    this.stopSpinner();
     if (this.renderer.isDestroyed) return;
     if (!this.editor.isDestroyed) this.editor.destroy();
   }
@@ -322,19 +287,4 @@ export class PromptBox {
     this.rightText.content = new StyledText(chunks);
   }
 
-  private startSpinner(): void {
-    if (this.spinnerTimer !== null) return;
-    this.spinnerTicks = 0;
-    this.spinnerText.content = activityFrame(0);
-    this.spinnerTimer = setInterval(() => {
-      this.spinnerTicks += 1;
-      this.spinnerText.content = activityFrame(this.spinnerTicks);
-    }, SPINNER_INTERVAL_MS);
-  }
-
-  private stopSpinner(): void {
-    if (this.spinnerTimer === null) return;
-    clearInterval(this.spinnerTimer);
-    this.spinnerTimer = null;
-  }
 }

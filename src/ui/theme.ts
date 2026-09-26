@@ -16,44 +16,51 @@ export interface UiTheme {
   warning: string;
   error: string;
   info: string;
+  /** Fill-bar ramp: the gradient a filled meter fades through. */
+  meter: [string, string, string];
+  /** Track behind a meter fill. */
+  meterTrack: string;
 }
 
-// OpenCode's `carbonfox` theme (packages/tui/src/theme/assets/carbonfox.json),
-// mapped onto LazyLlama's token set: near-black background ramp, cyan primary,
-// pink accent, and a green/amber status pair. The theme has no alpha channels
-// for muted/border, so those stay opaque here.
+// Monochrome: black and white with a grey ramp. Surfaces climb the ramp
+// (background -> panel -> element -> border) and the meters fade through
+// `meter` so a filled bar reads as a gradient rather than a flat block.
 export const DARK_THEME: UiTheme = {
   mode: "dark",
-  background: "#161616",
-  panel: "#1a1a1a",
-  element: "#1e1e1e",
-  text: "#f2f4f8",
-  muted: "#7d848f",
-  border: "#303030",
-  borderActive: "#33b1ff",
-  primary: "#33b1ff",
-  accent: "#ff7eb6",
-  success: "#25be6a",
-  warning: "#f1c21b",
-  error: "#ee5396",
-  info: "#78a9ff",
+  background: "#000000",
+  panel: "#0a0a0a",
+  element: "#141414",
+  text: "#ffffff",
+  muted: "#8c8c8c",
+  border: "#262626",
+  borderActive: "#e6e6e6",
+  primary: "#e6e6e6",
+  accent: "#ffffff",
+  success: "#a3a3a3",
+  warning: "#cfcfcf",
+  error: "#ffffff",
+  info: "#8c8c8c",
+  meter: ["#ffffff", "#b4b4b4", "#6e6e6e"],
+  meterTrack: "#242424",
 };
 
 export const LIGHT_THEME: UiTheme = {
   mode: "light",
   background: "#ffffff",
-  panel: "#f4f4f4",
-  element: "#f4f4f4",
-  text: "#161616",
-  muted: "#6f6f6f",
-  border: "#dcdcdc",
-  borderActive: "#0043ce",
-  primary: "#0043ce",
-  accent: "#9f1853",
-  success: "#198038",
-  warning: "#007d79",
-  error: "#9f1853",
-  info: "#0043ce",
+  panel: "#fafafa",
+  element: "#f0f0f0",
+  text: "#0a0a0a",
+  muted: "#6b6b6b",
+  border: "#d6d6d6",
+  borderActive: "#1a1a1a",
+  primary: "#1a1a1a",
+  accent: "#000000",
+  success: "#3f3f3f",
+  warning: "#5a5a5a",
+  error: "#000000",
+  info: "#6b6b6b",
+  meter: ["#0a0a0a", "#4d4d4d", "#9a9a9a"],
+  meterTrack: "#e4e4e4",
 };
 
 export function themeForMode(mode: ThemeMode | null | undefined): UiTheme {

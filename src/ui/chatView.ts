@@ -335,6 +335,18 @@ export class ChatScreen {
     this.prompt.setPlaceholder(this.transcript.isEmpty() ? "Ask anything…" : undefined);
   }
 
+  // Live slot footprint from /slots, refreshed while a request is running.
+  // Turn timings still overwrite it with the exact numbers when they arrive.
+  setLiveContext(used: number, total?: number): void {
+    this.contextUsed = used;
+    if (total !== undefined && total > 0) this.contextTotal = total;
+    this.syncPrompt();
+    this.patchSidebarData({
+      context: { used, total: this.contextTotal },
+      server: { nCtx: this.contextTotal },
+    });
+  }
+
   setContext(used?: number, total?: number): void {
     this.contextUsed = used;
     this.contextTotal = total ?? this.contextTotal;

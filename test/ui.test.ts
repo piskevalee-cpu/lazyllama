@@ -22,7 +22,7 @@ import type { ChatMessage } from "../src/server.ts";
 import { createAppUi } from "../src/ui/controller.ts";
 import { Transcript, formatAssistantFooter, formatThinkingDuration } from "../src/ui/transcript.ts";
 import { formatContextCompact } from "../src/ui/prompt.ts";
-import { formatContextRows, formatSidebarContext } from "../src/ui/sidebar.ts";
+import { formatContextRows, formatModelRows, formatSidebarContext, formatSystemRows } from "../src/ui/sidebar.ts";
 import { DARK_THEME } from "../src/ui/theme.ts";
 import { requiredEditorRows, selectEditorDensity } from "../src/ui/hubView.ts";
 import { isEnterKey } from "../src/ui/keys.ts";
@@ -203,12 +203,42 @@ describe("OpenTUI Enter handling", () => {
     expect(formatSidebarContext(undefined, undefined)).toBe("--");
   });
 
-  test("side panel moves the context meter out of the footer", () => {
+  test("the context block reports size, used tokens and a meter", () => {
     const rows = formatContextRows({ used: 12345, total: 32768 });
-    const flat = rows.map((row) => `${row.label} ${row.value}`).join(" | ");
-    expect(flat).toContain("12.3K tokens");
-    expect(flat).toContain("38%");
-    expect(flat).toContain("32.8K");
+    expect(rows[0]).toMatchObject({ label: "context size", value: "32.8K" });
+    expect(rows[1]).toMatchObject({ label: "used", value: "12.3K" });
+    expect(rows[2]?.bar).toBeCloseTo(12345 / 32768, 5);
+    expect(rows[2]?.value).toBe("38%");
+    // The configured context size no longer repeats in the model block.
+    const model = formatModelRows({
+      name: "m",
+      source: "local",
+      ctxSize: 8192,
+      gpuLayers: "auto",
+      temp: 0.7,
+      topP: 0.9,
+      topK: 40,
+      reasoning: "auto",
+    }).map((row) => row.label);
+    expect(model).not.toContain("ctx");
+  });
+
+  test("every system core gets a percentage and the same meter", () => {
+    const rows = formatSystemRows({
+      cpuPct: 0.25,
+      perCorePct: [0, 0.5, 1, 0.75, 0.1, 0.2, 0.3, 0.4, 0.6, 0.9],
+      memUsedMiB: 500,
+      memTotalMiB: 1000,
+      load1: 1.5,
+    });
+    const cores = rows.filter((row) => row.label.startsWith("c") && /^[0-9]+$/.test(row.label.slice(1)));
+    expect(cores.length).toBe(10);
+    expect(cores[0]?.value).toBe("0%");
+    expect(cores[2]?.value).toBe("100%");
+    for (const core of cores) expect(typeof core.bar).toBe("number");
+    const cpu = rows.find((row) => row.label === "CPU");
+    expect(cpu?.value).toBe("25%");
+    expect(cpu?.bar).toBeCloseTo(0.25, 5);
   });
 
   test("empty model list keeps its notice and offers Hugging Face", async () => {
@@ -454,13 +484,14 @@ describe("OpenCode-style chat layout", () => {
     try {
       await enterChat(app);
       app.ui.setContext(12345, 32768);
-      const frame = await app.waitForFrame((frame) => frame.includes("12.3K tokens"));
+      // Wait for the value, not the label, which renders before any data.
+      const frame = await app.waitForFrame((frame) => frame.includes("12.3K"));
       expect(frame).toContain("Model");
       expect(frame).toContain("Server");
       expect(frame).toContain("System");
       expect(frame).toContain("used");
+      expect(frame).toContain("12.3K");
       expect(frame).toContain("38%");
-      expect(frame).toContain("limit");
       expect(frame).toContain("32.8K");
       // Context lives in the panel; the chat view has no header or status bar.
       expect(frame).not.toContain("lazyllama  demo");
@@ -520,6 +551,28 @@ describe("OpenCode-style chat layout", () => {
 });
 
 describe("interrupt handling", () => {
+  test("the prompt footer keeps the model name and shows no thinking spinner", async () => {
+    const app = await createTestUi({
+      onSend: (_transcript, chat) => {
+        const stream = chat.startAssistant();
+        stream.push("answer");
+        // Intentionally left streaming: the busy state is what matters.
+      },
+    });
+    try {
+      await enterChat(app);
+      const idle = await app.waitForFrame((frame) => frame.includes("demo"));
+      expect(idle).toContain("esc interrupt");
+      // Typing must not displace the model name from the left footer slot.
+      await app.mockInput.typeText("typing");
+      const typed = await app.waitForFrame((frame) => frame.includes("typing"));
+      expect(typed).toContain("demo");
+      expect(typed).toContain("esc interrupt");
+    } finally {
+      app.ui.destroy();
+    }
+  });
+
   test("escape arms first, then aborts the in-flight request", async () => {
     const signals: AbortSignal[] = [];
     const app = await createTestUi({
@@ -630,13 +683,15 @@ describe("thinking display", () => {
       await enterChat(app);
       await app.mockInput.typeText("think please");
       await pressAndSettle(app, () => app.mockInput.pressEnter());
-      await paint(app);
-      const shown = await app.waitForFrame((frame) => frame.includes("Thought"), { maxPasses: 60 });
+      // Markdown finalization plus the 80ms thinking ticker make this the
+      // slowest frame in the suite: give both a generous margin.
+      await paint(app, 350);
+      const shown = await app.waitForFrame((frame) => frame.includes("Thought"), { maxPasses: 120 });
       expect(shown).toContain("weighing the options");
       expect(shown).toContain("the answer");
       await pressAndSettle(app, () => app.mockInput.pressKey("t", { ctrl: true }));
-      await paint(app);
-      const hidden = await app.waitForFrame((frame) => !frame.includes("Thought"), { maxPasses: 60 });
+      await paint(app, 250);
+      const hidden = await app.waitForFrame((frame) => !frame.includes("Thought"), { maxPasses: 120 });
       expect(hidden).toContain("the answer");
       expect(hidden).not.toContain("weighing the options");
     } finally {
@@ -669,6 +724,7 @@ describe("side panel belongs to the chat screen only", () => {
       await pressAndSettle(app, () => app.mockInput.pressEnter());
       const chat = await app.waitForFrame((frame) => frame.includes("n_ctx"));
       expect(chat).toContain("System");
+      expect(chat).toContain("context size");
       expect(sidebar()?.visible).toBe(true);
     } finally {
       app.ui.destroy();
@@ -881,6 +937,26 @@ describe("thinking and thought never coexist", () => {
       expect(pending()?.visible).toBe(false);
       expect(thinking).toContain("thinking…");
       expect(thinking).not.toContain("Thought for");
+      // The animation is the same Braille spinner OpenCode uses, in the
+      // transcript rather than the prompt box.
+      expect(thinking).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] thinking…/);
+      const transcriptFrames = new Set<string>();
+      for (let i = 0; i < 12; i += 1) {
+        await app.flush();
+        await new Promise((resolve) => setTimeout(resolve, 90));
+        const current = app.captureCharFrame();
+        const match = current.match(/([⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]) thinking…/);
+        if (match) transcriptFrames.add(match[1]!);
+      }
+      expect(transcriptFrames.size).toBeGreaterThan(1);
+      // ...and the prompt's own footer line never shows one.
+      const footer = app
+        .captureCharFrame()
+        .split("\n")
+        .find((line) => line.includes("esc interrupt"));
+      expect(footer).toBeDefined();
+      expect(footer).toContain("demo");
+      expect(footer).not.toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
     } finally {
       app.ui.destroy();
     }
