@@ -8,8 +8,9 @@ import {
   type Renderable,
   type TextChunk,
 } from "@opentui/core";
-import { BLOCK_EMPTY, BLOCK_FULL, pct } from "../ascii.js";
+import { pct } from "../ascii.js";
 import { SIDEBAR_WIDTH, type SidebarMode } from "./layout.js";
+import { gradientFill, meterTokens } from "./meter.js";
 import type { UiTheme } from "./theme.js";
 
 export type SidebarSectionId = "context" | "model" | "server" | "system";
@@ -59,10 +60,14 @@ const UNKNOWN = "--";
 // whenever the content overflows, so rows are laid out for the narrower box and
 // never clip on the first overflowing frame.
 const FULL_WIDTH = SIDEBAR_WIDTH - 6;
+// The label column fits the longest label ("context size"); plain rows then
+// get the whole remainder so a number is never cut, and meter rows reserve
+// room for the percentage and the bar instead.
 const LABEL_WIDTH = 13;
+const VALUE_WIDTH = FULL_WIDTH - LABEL_WIDTH;
 const METER_GAP = 2;
-const METER_WIDTH = 10;
-const VALUE_WIDTH = FULL_WIDTH - LABEL_WIDTH - METER_GAP - METER_WIDTH;
+const METER_VALUE_WIDTH = 5;
+const METER_WIDTH = FULL_WIDTH - LABEL_WIDTH - METER_VALUE_WIDTH - METER_GAP;
 const CURSOR_SLOT = "❯ ";
 const IDLE_CURSOR_SLOT = "  ";
 const EXPANDED_MARKER = "▾";
@@ -473,23 +478,8 @@ export class SidePanel {
     }
   }
 
-  // A filled meter fades from the brightest ramp step to the dimmest, so the
-  // bar reads as a gradient instead of a flat block. Returns one chunk per
-  // ramp step, which is three chunks regardless of the fill.
   private meterChunks(frac: number, width: number): TextChunk[] {
-    const clamped = Math.min(1, Math.max(0, frac));
-    const filled = Math.round(clamped * width);
-    const [bright, mid, dim] = this.theme.meter;
-    const ramp = [bright, mid, dim];
-    const chunks: TextChunk[] = [];
-    if (filled === 0) return [fg(this.theme.meterTrack)(BLOCK_EMPTY.repeat(width))];
-    for (let step = 0; step < ramp.length; step += 1) {
-      const from = Math.round((step * filled) / ramp.length);
-      const to = Math.round(((step + 1) * filled) / ramp.length);
-      if (to > from) chunks.push(fg(ramp[step]!)(BLOCK_FULL.repeat(to - from)));
-    }
-    if (filled < width) chunks.push(fg(this.theme.meterTrack)(BLOCK_EMPTY.repeat(width - filled)));
-    return chunks;
+    return gradientFill(frac, width, meterTokens(this.theme));
   }
 
   private paintRow(text: TextRenderable, row: SidebarRow): void {
@@ -505,7 +495,7 @@ export class SidePanel {
       } else {
         const label = truncate(row.label.padEnd(LABEL_WIDTH), LABEL_WIDTH);
         chunks.push(fg(this.theme.muted)(label));
-        chunks.push(fg(value)(truncate(row.value, VALUE_WIDTH).padEnd(VALUE_WIDTH, " ")));
+        chunks.push(fg(value)(truncate(row.value, METER_VALUE_WIDTH).padEnd(METER_VALUE_WIDTH, " ")));
         chunks.push(fg(this.theme.meterTrack)(" ".repeat(METER_GAP)));
         chunks.push(...this.meterChunks(row.bar, METER_WIDTH));
       }

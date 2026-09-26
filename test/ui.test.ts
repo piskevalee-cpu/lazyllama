@@ -795,8 +795,13 @@ describe("chat message shape", () => {
       await enterChat(app);
       await app.mockInput.typeText("hello");
       await pressAndSettle(app, () => app.mockInput.pressEnter());
-      await paint(app);
-      const frame = await app.waitForFrame((frame) => frame.includes("▣ 3 tok"), { maxPasses: 60 });
+      await paint(app, 300);
+      // Wait for the finalized state: the thought header, its markdown body and
+      // the footer can settle on different frames.
+      const frame = await app.waitForFrame(
+        (frame) => frame.includes("▾ Thought for 900ms") && frame.includes("weighing the options"),
+        { maxPasses: 150 },
+      );
       const lines = frame.split("\n");
       const header = lines.find((line) => line.includes("▾ Thought for 900ms"));
       const thought = lines.find((line) => line.includes("weighing the options"));

@@ -3,6 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { readSlotContext } from "../src/perf.ts";
+import { gradientFill, sweepFill } from "../src/ui/meter.ts";
 import {
   CONFIG_FIELDS,
   CONFIG_GROUP_ORDER,
@@ -118,6 +119,34 @@ describe("ascii helpers", () => {
   });
   test("thinking dots stays 3 wide", () => {
     for (let i = 0; i < 8; i += 1) expect(thinkingDots(i).length).toBe(3);
+  });
+});
+
+describe("meters", () => {
+  test("the gradient fill fades through the ramp and keeps a dim track", () => {
+    const meter = { ramp: ["#ffffff", "#b4b4b4", "#6e6e6e"] as [string, string, string], track: "#242424" };
+    const full = gradientFill(1, 9, meter);
+    expect(full.map((chunk) => chunk.text).join("")).toBe("\u2588".repeat(9));
+    expect(full.some((chunk) => String(chunk.fg).includes("1.00"))).toBe(true);
+    // A partial fill leaves the rest of the track dimmed.
+    const half = gradientFill(0.5, 10, meter);
+    const glyphs = half.map((chunk) => chunk.text).join("");
+    expect(glyphs).toBe("\u2588".repeat(5) + "\u2591".repeat(5));
+    expect(gradientFill(0, 4, meter).map((chunk) => chunk.text).join("")).toBe("\u2591".repeat(4));
+  });
+
+  test("the loading sweep keeps its width while it travels", () => {
+    const meter = { ramp: ["#ffffff", "#b4b4b4", "#6e6e6e"] as [string, string, string], track: "#242424" };
+    for (const elapsed of [0, 240, 900, 3000]) {
+      const glyphs = sweepFill(elapsed, 28, meter)
+        .map((chunk) => chunk.text)
+        .join("");
+      expect(glyphs.length).toBe(28);
+    }
+    // It must actually move.
+    const a = sweepFill(0, 28, meter).map((chunk) => chunk.text).join("");
+    const b = sweepFill(600, 28, meter).map((chunk) => chunk.text).join("");
+    expect(a).not.toBe(b);
   });
 });
 

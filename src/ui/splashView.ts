@@ -7,6 +7,7 @@ export class SplashView {
   readonly body: BoxRenderable;
   private readonly logo;
   private readonly status;
+  private readonly bar;
 
   constructor(
     renderer: CliRenderer,
@@ -33,13 +34,21 @@ export class SplashView {
       wrapMode: "none",
     });
     this.status.fg = theme.muted;
+    this.bar = staticText(renderer, {
+      id: "splash-bar",
+      width: "100%",
+      textAlign: "center",
+      wrapMode: "none",
+    });
     this.body.add(this.logo);
+    this.body.add(this.bar);
     this.body.add(this.status);
   }
 
   render(frame: SplashFrame): void {
     this.logo.content = frame.styledLogo;
-    this.status.content = `${frame.status}  loading lazyllama`;
+    this.bar.content = frame.bar;
+    this.status.content = frame.status;
   }
 
   setVisible(visible: boolean): void {

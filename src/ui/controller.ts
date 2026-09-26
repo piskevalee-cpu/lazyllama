@@ -32,6 +32,7 @@ import {
   Keymap,
   type KeymapContext,
 } from "./keys.js";
+import { meterTokens } from "./meter.js";
 import { destroyRenderer } from "./opentui.js";
 import { createShell } from "./shell.js";
 import { SplashView } from "./splashView.js";
@@ -537,11 +538,11 @@ export function createAppUi(
   }
 
   function startSplashTimer(): void {
-    splash.render(splashFrame(Date.now() - splashStartedAt, theme.primary));
+    splash.render(splashFrame(Date.now() - splashStartedAt, theme.primary, meterTokens(theme)));
     if (splashMinMs <= 0) return;
     splashTimer = setInterval(() => {
       if (destroyed) return;
-      const frame = splashFrame(Date.now() - splashStartedAt, theme.primary);
+      const frame = splashFrame(Date.now() - splashStartedAt, theme.primary, meterTokens(theme));
       splash.render(frame);
       if (Date.now() - splashStartedAt >= splashMinMs) enterHubFromSplash();
     }, splashTickMs);

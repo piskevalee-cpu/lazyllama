@@ -208,6 +208,10 @@ arrow-down walks every field and action end to end.
 
 ## Theme
 
+`src/ui/meter.ts` owns the shared gradient fill: `gradientFill` for meters and
+`sweepFill` for the splash's indeterminate loading bar, so the splash and the
+side panel are literally the same bar.
+
 `src/ui/theme.ts` is deliberately monochrome rather than a port: black and
 white over a grey ramp (`#000000` → `#0a0a0a` → `#141414` → `#262626` →
 `#8c8c8c`), so the palette came off OpenCode entirely. Two extra tokens drive
