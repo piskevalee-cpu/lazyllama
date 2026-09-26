@@ -61,7 +61,7 @@ export function shimScript(entry: string, bunPath?: string): string {
   const bun = bunPath && bunPath.length > 0 ? bunPath : "bun";
   return [
     "#!/bin/sh",
-    "# lazyllama launcher. Installed by `bun run install`; safe to delete.",
+    "# lazyllama launcher. Installed by `bun run setup`; safe to delete.",
     `BUN=\${LAZYLLAMA_BUN:-${bun}}`,
     `exec "$BUN" ${shellQuote(entry)} "$@"`,
     "",
@@ -117,7 +117,7 @@ export function rcFile(shell: ShellName, home: string = homedir()): string {
   }
 }
 
-export const RC_MARKER = "# added by `bun run install` (lazyllama)";
+export const RC_MARKER = "# added by `bun run setup` (lazyllama)";
 
 /** The exact line that would be appended, so the wizard can show it first. */
 export function pathExportLine(dir: string, shell: ShellName): string {
@@ -187,7 +187,7 @@ export function formatBytes(bytes: number): string {
 // -- standalone app copy -------------------------------------------------
 
 /** Only what the app needs at runtime: sources and manifests. */
-export const APP_COPY_ENTRIES = ["src", "package.json", "package-lock.json", "tsconfig.json"];
+export const APP_COPY_ENTRIES = ["src", "package.json", "bun.lock", "tsconfig.json"];
 
 export interface AppCopyResult {
   dir: string;
@@ -288,12 +288,11 @@ export async function installAppCopy(
   await yieldToLoop();
   let depsReady = installRuntimeDeps(repoRoot, target);
   if (!depsReady) {
-    // No resolvable tree in the checkout: fall back to a real install. No
-    // --frozen-lockfile: the repo carries an npm lockfile that bun would want
-    // to migrate, which it refuses to do while frozen.
+    // No resolvable tree in the checkout: fall back to a real install, which
+    // the copied bun.lock keeps reproducible.
     try {
       const code = await new Promise<number>((done, fail) => {
-        const child = spawn("bun", ["install", "--production"], { cwd: target, stdio: "ignore" });
+        const child = spawn("bun", ["install", "--production", "--frozen-lockfile"], { cwd: target, stdio: "ignore" });
         child.on("error", (err) => fail(err));
         child.on("close", (exit) => done(exit ?? 1));
       });

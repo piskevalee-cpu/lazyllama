@@ -1,4 +1,4 @@
-// `bun run install` — the full setup: hardware survey, backend choice, models
+// `bun run setup` — the full setup: hardware survey, backend choice, models
 // directory, server provisioning, and putting `lazyllama` on PATH.
 //
 // This is the only place that provisions anything, and only when a person runs
@@ -82,7 +82,7 @@ const BACKEND_IDS: Backend[] = [
 ];
 
 // The installer ships with the checkout, so its root is the working directory
-// `bun run install` starts in.
+// `bun run setup` starts in.
 const REPO_ROOT = resolve(process.cwd());
 
 class QuitError extends Error {}
@@ -557,19 +557,22 @@ async function runPlain(opts: InstallCliOptions): Promise<number> {
 
 // -- entry ----------------------------------------------------------------
 
-export const INSTALL_USAGE = `lazyllama install — set up the server, the models directory and the launcher
+export const INSTALL_USAGE = `lazyllama setup — the server, the models directory and the launcher
 
-  bun run install                 interactive wizard (this is the normal path)
-  bun run install --yes           accept every default, no prompts
-  bun run install --backend vulkan pick a backend up front
-  bun run install --models-dir ~/lazyllama-models
+  bun run setup                   interactive wizard (this is the normal path)
+  bun run setup --yes             accept every default, no prompts
+  bun run setup --backend vulkan  pick a backend up front
+  bun run setup --models-dir ~/llama-models
                                   where the .gguf files live (default: ~/lazyllama-models)
-  bun run install --link          point the launcher at this checkout instead of copying it
-  bun run install --no-path       install everything but leave PATH alone
-  bun run install --no-build      never fall back to compiling llama.cpp
-  bun run install --tag b11200    pin a llama.cpp release
-  bun run install --force         reinstall even if a receipt exists
-  bun run install --launch        start lazyllama when the wizard finishes
+  bun run setup --link            point the launcher at this checkout instead of copying it
+  bun run setup --no-path         install everything but leave PATH alone
+  bun run setup --no-build        never fall back to compiling llama.cpp
+  bun run setup --tag b11200      pin a llama.cpp release
+  bun run setup --force           reinstall even if a receipt exists
+  bun run setup --launch          start lazyllama when the wizard finishes
+
+The command is "setup", not "install": a script named "install" is a package
+manager lifecycle hook, so a plain "bun install" would run the wizard.
 `;
 
 export async function runInstall(opts: InstallCliOptions): Promise<number> {

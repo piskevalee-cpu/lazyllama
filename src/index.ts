@@ -35,8 +35,8 @@ const USAGE = `lazyllama — a keyboard-first terminal client for a local llama-
   --version                      the installed version
 
 Models come from LAZYLLAMA_MODELS_DIR, then the directory chosen by
-\`bun run install\` (default ~/lazyllama-models), then ./models.
-Run \`bun run install\` to provision a llama-server and put lazyllama on PATH.
+\`bun run setup\` (default ~/lazyllama-models), then ./models.
+Run \`bun run setup\` to provision a llama-server and put lazyllama on PATH.
 `;
 
 function packageVersion(): string {

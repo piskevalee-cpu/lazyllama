@@ -30,7 +30,7 @@ One managed `llama-server`, one prompt, no cloud. Pick a model, tune the launch
 flags, chat — and let the wizard provision the server and put `lazyllama` on your
 `PATH`.
 
-`bun run install` → a server that matches your hardware, a models directory, and
+`bun run setup` → a server that matches your hardware, a models directory, and
 a `lazyllama` command that works from anywhere.
 
 [Report Bug][bug-url] &middot; [Request Feature][feature-url] &middot; [MIT licensed][license-url]
@@ -124,7 +124,7 @@ Local models deserve a real interface, not an API client pointed at localhost.
 
 ## Features
 
-* Setup wizard: hardware survey, backend recommendation, models directory,
+* Setup wizard (`bun run setup`): hardware survey, backend recommendation, models directory,
   streaming download with progress, `PATH` setup — in the app's own visual
   language.
 * Every llama.cpp prebuilt slice, with the requirement of each one stated and
@@ -167,7 +167,7 @@ the llama.cpp releases.
 
 * [Bun][bun-url] **1.4.2** — pinned in `.mise.toml`.
 * A model. Drop a `.gguf` into a directory, or use a Hugging Face repo id.
-* Nothing else. The wizard fetches a prebuilt `llama-server` for your hardware and
+* Nothing else. The `bun run setup` wizard fetches a prebuilt `llama-server` for your hardware and
   falls back to compiling llama.cpp only if every download fails.
 
 ### Install
@@ -176,8 +176,12 @@ the llama.cpp releases.
 git clone https://github.com/piskevalee-cpu/lazyllama.git
 cd lazyllama
 bun install
-bun run install
+bun run setup
 ```
+
+> The setup command is `setup`, not `install`: a script called `install` is a
+> package manager lifecycle hook, so a plain `bun install` would run the wizard
+> and start provisioning.
 
 The wizard walks five steps: **hardware → backend → models directory →
 install → `PATH`**. It ends with `lazyllama` on your `PATH`, working from any
@@ -193,14 +197,14 @@ LAZYLLAMA_SERVER_BIN=/path/to/llama-server bun run dev
 Prefer to drive it yourself? The wizard is optional:
 
 ```sh
-bun run install --yes                       # every default, no prompts
-bun run install --backend vulkan            # pick a backend up front
-bun run install --models-dir ~/llama-models # where the .gguf files live
-bun run install --link                      # launcher points at this checkout
-bun run install --no-path                   # install everything, leave PATH alone
-bun run install --no-build                  # never fall back to compiling
-bun run install --tag b11200                # pin a llama.cpp release
-bun run install --help                      # every flag
+bun run setup --yes                       # every default, no prompts
+bun run setup --backend vulkan            # pick a backend up front
+bun run setup --models-dir ~/llama-models # where the .gguf files live
+bun run setup --link                      # launcher points at this checkout
+bun run setup --no-path                   # install everything, leave PATH alone
+bun run setup --no-build                  # never fall back to compiling
+bun run setup --tag b11200                # pin a llama.cpp release
+bun run setup --help                      # every flag
 ```
 
 ### Models
@@ -208,7 +212,7 @@ bun run install --help                      # every flag
 Models are discovered from the first of these that exists:
 
 1. `LAZYLLAMA_MODELS_DIR`
-2. the directory the installer chose, `~/lazyllama-models` by default
+2. the directory the wizard chose, `~/lazyllama-models` by default
 3. `./models`, so a fresh clone works with nothing configured
 
 ```sh
@@ -352,7 +356,7 @@ network.
 ```text
 src/
   index.ts            entry: CLI parsing, boot flow, server lifecycle, chat
-  install.ts          the `bun run install` wizard and its plain-text path
+  install.ts          the `bun run setup` wizard and its plain-text path
   installer.ts        provisioning: release fetch, streaming download, verify
   backends.ts         the backend catalog, hardware survey, asset picking
   paths.ts            XDG roots, the launcher shim, PATH, dependency closure
@@ -402,7 +406,7 @@ which records the OpenTUI traps this project has already hit.
 - [x] Live context meter and model thinking
 - [ ] Persist and resume conversations
 - [ ] Download models from Hugging Face inside the app
-- [ ] Windows support (`bun run install --backend cpu` with a manual binary today)
+- [ ] Windows support (`bun run setup --backend cpu` with a manual binary today)
 - [ ] `/stats`: tokens per second and context history for a session
 
 ## Contributing

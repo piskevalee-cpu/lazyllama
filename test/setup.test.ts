@@ -259,7 +259,7 @@ describe("standalone app copy", () => {
     expect(result.depsReady).toBe(true);
     // Sources and manifests travel; tests and docs do not.
     expect(result.entry).toBe(join(target, "src", "index.ts"));
-    for (const file of ["src/index.ts", "src/install.ts", "package.json", "tsconfig.json"]) {
+    for (const file of ["src/index.ts", "src/install.ts", "package.json", "bun.lock", "tsconfig.json"]) {
       expect(() => statSync(join(target, file))).not.toThrow();
     }
     expect(() => statSync(join(target, "test"))).toThrow();
