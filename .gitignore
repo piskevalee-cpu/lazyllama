@@ -1,0 +1,12 @@
+# llama.cpp is a local reference/build source only: never edit, never commit.
+llama.cpp/
+# The OpenCode checkout is a read-only parity reference, not part of this repo.
+opencode/
+node_modules/
+dist/
+*.log
+.DS_Store
+# Local model files are large and personal: keep the dir, ignore the blobs.
+models/*.gguf
+models/*.bin
+models/*.safetensors
