@@ -19,9 +19,11 @@ import {
   type KeyEvent,
   type TextRenderable,
 } from "@opentui/core";
-import { formatGiB, simdSummary, type Backend, type BackendOption, type Hardware } from "../backends.js";
+import { simdSummary, type Backend, type BackendOption, type Hardware } from "../backends.js";
+import { formatGiB, gibValue } from "../ascii.js";
 import { abbreviateHome } from "../config.js";
 import { formatBytes } from "../paths.js";
+import { sampleGpuMemory, type GpuMemory } from "../vram.js";
 import type { SplashFrame } from "../splash.js";
 import { staticText, surface } from "./components.js";
 import { isEnterKey, isEscapeKey, isQuitKey } from "./keys.js";
@@ -131,7 +133,31 @@ export function installHints(width: number, step: InstallStep, meta: string): st
 }
 
 /** The hardware survey as label/value rows, with a real RAM meter. */
-export function hardwareRows(hw: Hardware): Row[] {
+/**
+ * Dedicated memory, as one row per device. A machine without a GPU gets no row
+ * at all rather than a placeholder: the survey should only claim what it found.
+ */
+export function vramRows(gpus: GpuMemory[]): Row[] {
+  const rows: Row[] = [];
+  gpus.forEach((gpu, index) => {
+    const label = gpus.length > 1 ? `vram${index + 1}` : "vram";
+    if (gpu.shared) {
+      rows.push({ label, value: `shared · ${gpu.totalBytes > 0 ? `${(gpu.totalBytes / 1073741824).toFixed(0)} GiB unified` : gpu.name}`, tone: "muted" });
+      return;
+    }
+    const used = gpu.usedBytes;
+    const fraction = used !== undefined && gpu.totalBytes > 0 ? used / gpu.totalBytes : undefined;
+    rows.push({
+      label,
+      value: used === undefined ? formatGiB(gpu.totalBytes) : `${gibValue(used)} / ${gibValue(gpu.totalBytes)} GiB`,
+      bar: fraction,
+      tone: used === undefined ? "muted" : "normal",
+    });
+  });
+  return rows;
+}
+
+export function hardwareRows(hw: Hardware, gpus: GpuMemory[] = []): Row[] {
   const rows: Row[] = [{ label: "os", value: `${hw.prettyOs} (${hw.arch})` }];
   if (hw.cpuModel.length > 0) rows.push({ label: "cpu", value: hw.cpuModel });
   rows.push({ label: "threads", value: `${hw.cores} · ${simdSummary(hw)}` });
@@ -154,9 +180,11 @@ export function hardwareRows(hw: Hardware): Row[] {
   });
   rows.push({
     label: "ram",
-    value: hw.totalMemBytes > 0 ? `${formatGiB(hw.usedMemBytes)} / ${formatGiB(hw.totalMemBytes)}` : "--",
+    // The unit is written once, matching the panel's MEM row.
+    value: hw.totalMemBytes > 0 ? `${gibValue(hw.usedMemBytes)} / ${gibValue(hw.totalMemBytes)} GiB` : "--",
     bar: hw.totalMemBytes > 0 ? Math.min(1, hw.usedMemBytes / hw.totalMemBytes) : undefined,
   });
+  rows.push(...vramRows(gpus));
   return rows;
 }
 
@@ -361,7 +389,7 @@ export class InstallView {
     // -- hardware
     const hardwareSection = this.section("install-hardware", "detected hardware", "hardware");
     const hardwareBody = this.rowBox("install-hardware-body");
-    this.hardware = new RowList(renderer, hardwareBody, "install-hardware", 8, theme);
+    this.hardware = new RowList(renderer, hardwareBody, "install-hardware", 10, theme);
     hardwareSection.add(hardwareBody);
 
     // -- backend

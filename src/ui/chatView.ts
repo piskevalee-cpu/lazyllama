@@ -220,11 +220,13 @@ export class ChatScreen {
     server?: Partial<SidebarData["server"]>;
     system?: SidebarData["system"];
     model?: SidebarData["model"];
+    gpu?: SidebarData["gpu"];
   }): void {
     this.sidebarData = {
       model: patch.model ?? this.sidebarData.model,
       server: { ...this.sidebarData.server, ...(patch.server ?? {}) },
       context: patch.context ?? this.sidebarData.context,
+      gpu: patch.gpu ?? this.sidebarData.gpu,
       system: patch.system ?? this.sidebarData.system,
     };
     this.sidebar.setData(this.sidebarData);
@@ -455,6 +457,7 @@ export function emptySidebarData(cfg?: LaunchConfig): SidebarData {
       processing: false,
     },
     context: {},
+    gpu: [],
     system: { cpuPct: 0, perCorePct: [], memUsedMiB: 0, memTotalMiB: 0, load1: 0 },
   };
 }

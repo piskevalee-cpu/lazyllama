@@ -9,6 +9,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { arch, cpus, freemem, platform, totalmem } from "node:os";
+import { formatGiB, gibValue } from "./ascii.js";
 
 // llama.cpp publishes one prebuilt tarball per accelerator per arch in its
 // bNNNN releases. Ids double as the receipt's `backend` value, so they name the
@@ -552,14 +553,15 @@ export function describeHardware(hw: Hardware): string {
   lines.push(hw.gpus.length > 0 ? `GPU: ${hw.gpus.map((g) => `[${g.vendor}] ${g.name}`).join(" | ")}` : "GPU: none detected");
   if (hw.nvidiaDriverMajor !== undefined) lines.push(`NVIDIA driver: ${hw.nvidiaDriverMajor}`);
   lines.push(`Vulkan loader: ${hw.hasVulkanLoader ? `yes (${hw.vulkanDevices.length} device(s))` : "no"}`);
-  lines.push(`RAM: ${formatGiB(hw.usedMemBytes)} / ${formatGiB(hw.totalMemBytes)}`);
+  lines.push(`RAM: ${gibValue(hw.usedMemBytes)} / ${gibValue(hw.totalMemBytes)} GiB`);
   return lines.join("\n");
 }
 
-export function formatGiB(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "--";
-  return `${(bytes / 1073741824).toFixed(1)} GiB`;
-}
+
+
+// Re-exported: the hardware survey and the installer both format memory, and
+// one formatter keeps "12 GiB" from disagreeing with "12.0 GiB" two panels away.
+export { formatGiB };
 
 // -- release asset picking ------------------------------------------------
 

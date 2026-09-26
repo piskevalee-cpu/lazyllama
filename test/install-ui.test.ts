@@ -101,7 +101,7 @@ describe("wizard rows", () => {
     expect(byLabel.get("gpu")?.value).toContain("RTX 4070");
     expect(byLabel.get("driver")?.value).toBe("nvidia 581");
     expect(byLabel.get("vulkan")?.value).toContain("RTX 4070");
-    expect(byLabel.get("ram")?.value).toBe("16.0 GiB / 64.0 GiB");
+    expect(byLabel.get("ram")?.value).toBe("16 / 64 GiB");
     expect(byLabel.get("ram")?.bar).toBeCloseTo(0.25);
   });
 

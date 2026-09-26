@@ -224,10 +224,11 @@ describe("backend proposal", () => {
   test("describeHardware prints a readable survey", () => {
     const text = describeHardware(hw({ gpus: [{ vendor: "intel", name: "Iris Xe" }], hasVulkanLoader: true }));
     expect(text).toContain("GPU: [intel] Iris Xe");
-    expect(text).toContain("RAM: 8.0 GiB / 32.0 GiB");
+    expect(text).toContain("RAM: 8.0 / 32 GiB");
   });
-  test("formatGiB hides nonsense values", () => {
-    expect(formatGiB(0)).toBe("--");
+  test("formatGiB hides nonsense values but keeps a real zero", () => {
+    expect(formatGiB(0)).toBe("0.0 GiB");
+    expect(formatGiB(-1)).toBe("--");
     expect(formatGiB(1536 * 1024 ** 2)).toBe("1.5 GiB");
   });
 });

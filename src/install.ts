@@ -40,6 +40,7 @@ import {
   type ShellName,
 } from "./paths.js";
 import { splashFrame } from "./splash.js";
+import { sampleGpuMemory } from "./vram.js";
 import { defaultModelsDir, expandHome, readSettings, writeSettings } from "./settings.js";
 import {
   hardwareRows,
@@ -349,7 +350,7 @@ async function runWizard(opts: InstallCliOptions): Promise<number> {
       onRescan: () => {
         hardware = detectHardware();
         options = assessBackends(hardware);
-        view.setHardware(hardwareRows(hardware));
+        view.setHardware(hardwareRows(hardware, sampleGpuMemory()));
         view.setBackends(options, chosen);
       },
       onBack: () => advance?.(),
@@ -383,7 +384,7 @@ async function runWizard(opts: InstallCliOptions): Promise<number> {
         : (options.find((option) => option.recommended)?.def.id ?? "cpu");
 
     view.setSteps(opts.noPath ? STEP_ORDER.filter((s) => s !== "path") : STEP_ORDER);
-    view.setHardware(hardwareRows(hardware));
+    view.setHardware(hardwareRows(hardware, sampleGpuMemory()));
     view.show("hardware", backendLabel(chosen));
     await checkpoint();
 

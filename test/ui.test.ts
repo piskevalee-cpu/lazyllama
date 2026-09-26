@@ -22,6 +22,7 @@ import type { ChatMessage } from "../src/server.ts";
 import { createAppUi } from "../src/ui/controller.ts";
 import { Transcript, formatAssistantFooter, formatThinkingDuration } from "../src/ui/transcript.ts";
 import { formatContextCompact } from "../src/ui/prompt.ts";
+import { SidePanel, type SidebarData } from "../src/ui/sidebar.ts";
 import { formatContextRows, formatModelRows, formatSidebarContext, formatSystemRows } from "../src/ui/sidebar.ts";
 import { DARK_THEME } from "../src/ui/theme.ts";
 import { requiredEditorRows, selectEditorDensity } from "../src/ui/hubView.ts";
@@ -696,6 +697,62 @@ describe("thinking display", () => {
       expect(hidden).not.toContain("weighing the options");
     } finally {
       app.ui.destroy();
+    }
+  });
+});
+
+describe("the gpu section of the side panel", () => {
+  const GIB = 1024 ** 3;
+
+  async function panelWith(gpu: SidebarData["gpu"]): Promise<{
+    frame: string;
+    section: (() => ReturnType<typeof setup_find>) | null;
+    destroy(): void;
+  }> {
+    const setup = await createTestRenderer({ width: 100, height: 44 });
+    const panel = new SidePanel(setup.renderer, DARK_THEME);
+    setup.renderer.root.add(panel.body);
+    panel.setMode("column");
+    panel.setData({
+      model: { name: "demo", source: "local", ctxSize: 8192, gpuLayers: "auto", temp: null, topP: 0.9, topK: 40, reasoning: "auto" },
+      server: { baseUrl: "http://127.0.0.1:8080", slotId: 0, nCtx: 8192, props: true, metrics: true, processing: false },
+      context: { used: 100, total: 8192 },
+      gpu,
+      system: { cpuPct: 0.2, perCorePct: [0.1, 0.2], memUsedMiB: 1000, memTotalMiB: 16000, load1: 0.5 },
+    });
+    for (let i = 0; i < 3; i += 1) await setup.renderOnce();
+    return {
+      frame: setup.captureCharFrame(),
+      section: () => setup.renderer.root.findDescendantById("sidebar-section-gpu"),
+      destroy: () => setup.renderer.destroy(),
+    };
+  }
+  function setup_find() {
+    return undefined as unknown as { visible: boolean };
+  }
+
+  test("a machine with no gpu shows no gpu section at all", async () => {
+    const panel = await panelWith([]);
+    try {
+      expect(panel.frame).not.toContain("GPU");
+      expect(panel.section()?.visible).toBe(false);
+    } finally {
+      panel.destroy();
+    }
+  });
+
+  test("a card gets its name, a meter and a used line", async () => {
+    const panel = await panelWith([
+      { vendor: "nvidia", name: "NVIDIA GeForce RTX 4070", totalBytes: 12 * GIB, usedBytes: 6 * GIB, shared: false },
+    ]);
+    try {
+      expect(panel.frame).toContain("GPU");
+      expect(panel.frame).toContain("NVIDIA GeForce RTX 4070");
+      expect(panel.frame).toContain("50%");
+      expect(panel.frame).toContain("6.0 / 12 GiB");
+      expect(panel.section()?.visible).toBe(true);
+    } finally {
+      panel.destroy();
     }
   });
 });

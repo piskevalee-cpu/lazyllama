@@ -15,6 +15,7 @@ import { buildModelEntries, type SelectableModelEntry } from "../hub.js";
 import type { ChatMessage } from "../server.js";
 import { splashFrame } from "../splash.js";
 import { fetchServerStats, sampleSystem } from "../perf.js";
+import { sampleGpuMemory } from "../vram.js";
 import { sessionBindings, type SessionCommandContext } from "./bindings.js";
 import { ChatScreen, emptySidebarData } from "./chatView.js";
 import { loadFlags, saveFlags } from "./flags.js";
@@ -553,7 +554,9 @@ export function createAppUi(
     perfTimer = setInterval(() => {
       if (destroyed || screen !== "chat") return;
       const system = sampleSystem();
-      chat.patchSidebarData({ system });
+      // VRAM comes from the vendor tools, so it is sampled on the same tick and
+      // cached inside the detector rather than probed per render.
+      chat.patchSidebarData({ system, gpu: sampleGpuMemory() });
       void fetchServerStats(deps.getBaseUrl()).then((server) => {
         if (destroyed) return;
         // The slot reports prompt + generated tokens, so the context meter can

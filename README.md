@@ -298,6 +298,10 @@ full width.
 * **Model** — name, source, GPU layers, sampling, thinking mode. No context row
   here; that belongs to Context.
 * **Server** — URL, slot, context limit, tokens per second.
+* **GPU** — one block per device: name, a VRAM meter and used/total. Hidden
+  entirely on a machine without a GPU. Read from `nvidia-smi`, the DRM sysfs
+  counters that AMD and Intel publish, or `rocm-smi`; Apple Silicon and
+  integrated graphics say `shared` instead of claiming a pool they do not have.
 * **System** — CPU with a meter, a meter for every core, memory and load.
 
 ### Thinking
@@ -365,6 +369,7 @@ src/
   models.ts           .gguf discovery
   server.ts           one llama-server: spawn, readiness, REST and SSE
   perf.ts             /slots and /props readers for the live meters
+  vram.ts             dedicated GPU memory, per vendor
   shutdown.ts         one idempotent stop for Ctrl+C, SIGINT, SIGTERM, SIGHUP
   splash.ts logo.ts   the wordmark and its reveal, pure and width-aware
   ui/

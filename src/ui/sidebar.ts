@@ -8,12 +8,13 @@ import {
   type Renderable,
   type TextChunk,
 } from "@opentui/core";
-import { pct } from "../ascii.js";
+import { formatGiB, gibValue, pct } from "../ascii.js";
+import type { GpuMemory } from "../vram.js";
 import { SIDEBAR_WIDTH, type SidebarMode } from "./layout.js";
 import { gradientFill, meterTokens } from "./meter.js";
 import type { UiTheme } from "./theme.js";
 
-export type SidebarSectionId = "context" | "model" | "server" | "system";
+export type SidebarSectionId = "context" | "model" | "server" | "gpu" | "system";
 
 export interface SidebarData {
   model: {
@@ -37,6 +38,8 @@ export interface SidebarData {
     tokPerSecond?: number;
   };
   context: { used?: number; total?: number };
+  /** Dedicated GPU memory per device; empty on a machine without a GPU. */
+  gpu: GpuMemory[];
   system: {
     cpuPct: number;
     perCorePct: number[];
@@ -46,12 +49,13 @@ export interface SidebarData {
   };
 }
 
-export const SIDEBAR_SECTION_ORDER: SidebarSectionId[] = ["context", "model", "server", "system"];
+export const SIDEBAR_SECTION_ORDER: SidebarSectionId[] = ["context", "model", "server", "gpu", "system"];
 
 const SECTION_TITLES: Record<SidebarSectionId, string> = {
   context: "Context",
   model: "Model",
   server: "Server",
+  gpu: "GPU",
   system: "System",
 };
 
@@ -174,6 +178,39 @@ export function formatSystemRows(system: SidebarData["system"]): SidebarRow[] {
   return rows;
 }
 
+/**
+ * VRAM per device. A machine with no GPU produces no rows at all, and a section
+ * with no rows is hidden: an empty "GPU" block would be noise. Shared-memory
+ * parts (Apple Silicon, integrated graphics) say so instead of inventing a
+ * number they cannot report.
+ */
+export function formatGpuRows(gpus: GpuMemory[]): SidebarRow[] {
+  const rows: SidebarRow[] = [];
+  gpus.forEach((gpu, index) => {
+    const label = index === 0 ? "gpu" : `gpu${index + 1}`;
+    rows.push({ label, value: gpu.name });
+    if (gpu.shared) {
+      rows.push({ label: "vram", value: "shared", tone: "muted" });
+      rows.push({ label: "total", value: `${formatGiB(gpu.totalBytes)} system`, tone: "muted" });
+      return;
+    }
+    const used = gpu.usedBytes;
+    const fraction = used !== undefined && gpu.totalBytes > 0 ? used / gpu.totalBytes : 0;
+    rows.push({
+      label: "vram",
+      value: used === undefined ? UNKNOWN : pct(fraction),
+      bar: used === undefined ? undefined : fraction,
+      tone: used === undefined ? "muted" : "text",
+    });
+    rows.push({
+      label: "used",
+      // The unit is written once, the way the MEM row does it.
+      value: used === undefined ? `? / ${formatGiB(gpu.totalBytes)}` : `${gibValue(used)} / ${gibValue(gpu.totalBytes)} GiB`,
+    });
+  });
+  return rows;
+}
+
 function truncate(value: string, width: number): string {
   return value.length <= width ? value : `${value.slice(0, Math.max(0, width - 1))}…`;
 }
@@ -188,6 +225,8 @@ interface Section {
   body: BoxRenderable;
   texts: TextRenderable[];
   collapsed: boolean;
+  /** A section with no rows (a GPU section on a machine with no GPU) is hidden. */
+  hidden: boolean;
 }
 
 export class SidePanel {
@@ -303,13 +342,16 @@ export class SidePanel {
       context: formatContextRows(data.context),
       model: formatModelRows(data.model),
       server: formatServerRows(data.server),
+      gpu: formatGpuRows(data.gpu),
       system: formatSystemRows(data.system),
     };
     for (const section of this.sections) {
       const wanted = rows[section.id];
       this.resizeRows(section, wanted.length);
       wanted.forEach((row, index) => this.paintRow(section.texts[index]!, row));
+      this.setSectionHidden(section, wanted.length === 0);
     }
+    this.syncCursor();
   }
 
   setSectionCollapsed(id: SidebarSectionId, collapsed: boolean): void {
@@ -329,8 +371,12 @@ export class SidePanel {
 
   moveCursor(delta: 1 | -1): void {
     if (!this.cursorVisible) return;
-    const count = this.sections.length;
-    this.cursor = (this.cursor + delta + count) % count;
+    const visible = this.sections.filter((section) => !section.hidden);
+    if (visible.length === 0) return;
+    const current = visible.findIndex((section) => section.id === this.cursorId());
+    const from = current >= 0 ? current : 0;
+    const next = visible[(from + delta + visible.length) % visible.length];
+    if (next) this.cursor = this.sections.indexOf(next);
     this.syncCursor();
   }
 
@@ -398,6 +444,7 @@ export class SidePanel {
       body: undefined as unknown as BoxRenderable,
       texts: [] as TextRenderable[],
       collapsed: false,
+      hidden: false,
     };
     const box = new BoxRenderable(this.renderer, {
       id: `sidebar-section-${id}`,
@@ -511,8 +558,20 @@ export class SidePanel {
   }
 
   private syncSection(section: Section): void {
+    section.box.visible = !section.hidden;
     section.body.visible = !section.collapsed;
     this.paintHeader(section);
+  }
+
+  private setSectionHidden(section: Section, hidden: boolean): void {
+    if (section.hidden === hidden) return;
+    section.hidden = hidden;
+    if (hidden) this.releaseSectionFocus(section);
+    this.syncSection(section);
+  }
+
+  private releaseSectionFocus(section: Section): void {
+    if (section.header.focused) section.header.blur();
   }
 
   private paintHeader(section: Section): void {
@@ -525,6 +584,12 @@ export class SidePanel {
   }
 
   private syncCursor(): void {
+    // The cursor can land on a section that has since gone empty, e.g. a GPU
+    // that went away: pull it back to the first visible section.
+    if (this.sections[this.cursor]?.hidden) {
+      const first = this.sections.find((section) => !section.hidden);
+      if (first) this.cursor = this.sections.indexOf(first);
+    }
     for (const section of this.sections) this.paintHeader(section);
     if (this.cursorVisible) this.focusSection(this.sections[this.cursor]!);
   }
