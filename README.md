@@ -13,15 +13,6 @@
 [![Stargazers][stars-shield]][stars-url]
 [![Issues][issues-shield]][issues-url]
 
-```text
-██╗      █████╗ ███████╗██╗   ██╗██╗     ██╗      █████╗ ███╗   ███╗ █████╗
-██║     ██╔══██╗╚══███╔╝╚██╗ ██╔╝██║     ██║     ██╔══██╗████╗ ████║██╔══██╗
-██║     ███████║  ███╔╝  ╚████╔╝ ██║     ██║     ███████║██╔████╔██║███████║
-██║     ██╔══██║ ███╔╝    ╚██╔╝  ██║     ██║     ██╔══██║██║╚██╔╝██║██╔══██║
-███████╗██║  ██║███████╗   ██║   ███████╗███████╗██║  ██║██║ ╚═╝ ██║██║  ██║
-╚══════╝╚═╝  ╚═╝╚══════╝   ╚═╝   ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚═╝  ╚═╝
-```
-
 # LazyLlama
 
 **A keyboard-first terminal client for a model you run yourself.**
@@ -60,6 +51,7 @@ a `lazyllama` command that works from anywhere.
       <ul>
         <li><a href="#the-installer">The installer</a></li>
         <li><a href="#the-config-editor">The config editor</a></li>
+        <li><a href="#the-manual">The manual</a></li>
         <li><a href="#in-chat">In chat</a></li>
         <li><a href="#the-side-panel">The side panel</a></li>
         <li><a href="#thinking">Thinking</a></li>
@@ -131,12 +123,18 @@ Local models deserve a real interface, not an API client pointed at localhost.
   the ones your machine cannot run greyed out with the reason.
 * OpenCode-shaped session view: sticky transcript, L-shaped prompt, collapsible
   side panel, and no chrome competing with the conversation.
-* Toggleable sampling parameters: step past a maximum and the parameter is
-  dropped from both the server flags and the chat request.
+* Nothing on the command line you did not choose: the editor starts every
+  parameter at llama.cpp's own default and shows what that default is, and
+  stepping past a maximum drops the flag from the server argv *and* the chat
+  request.
+* An in-app manual (`?` or `F1`): every llama.cpp parameter, its documented
+  default, and what moving it actually changes — with the command your config
+  produces at the top.
 * Two-step Esc that really stops generation by closing the request, so
   `llama-server` cancels the task and frees the slot.
-* Model thinking shown as a collapsible thought block, split out of the answer
-  by llama.cpp's `reasoning_format`.
+* Model thinking shown as a collapsible thought block, split out of the answer by
+  llama.cpp's `reasoning_format`, with both thinking layers — `reasoning_effort`
+  and `reasoning_format` — configurable.
 * Live context meter that moves while the model is still generating.
 * Per-model presets, a system section with a meter per CPU core, and a
   `models/` directory you can point anywhere.
@@ -249,19 +247,93 @@ an explicit `Enter` — never a silent edit of your dotfile.
 | `Tab` `Shift+Tab` | jump between groups and actions |
 | `Enter` | edit the focused field inline |
 | `s` | save the preset for this model |
+| `?` | open the manual |
 | `Esc` | back to the model list |
 
 | Group | Fields |
 | --- | --- |
 | Context | context size, rope scale, keep tokens |
-| Launch | GPU layers, threads, batch threads, batch size, ubatch, jinja templates |
-| Sampling | temperature, top-p, top-k, repeat penalty, thinking |
+| Launch | GPU layers, threads, batch threads, batch size, micro batch, jinja templates |
+| Sampling | temperature, top-p, top-k, repeat penalty, thinking effort, reasoning format |
 | Network | host, port, `--props`, `--metrics` |
 | Advanced | raw extra arguments |
 
-Sampling parameters are toggleable: step past the maximum and the parameter
-switches **off**, which omits it from the server flags *and* from the chat
-request instead of sending a default you did not choose.
+**Only the context group ships a value.** Everything else starts at llama.cpp's
+own default, and a row that reads `default (x)` is not on the command line at
+all: llama.cpp applies `x` instead. Nothing is sent that you did not choose, so
+the default run is `-m <model> -c 0` and nothing else — and `-c 0` is llama.cpp's
+own "use the model's context".
+
+| Row | `default (…)` means | Sent as |
+| --- | --- | --- |
+| `gpu layers (-ngl)` | `auto` | `-ngl auto`, `0` or `all` |
+| `threads (-t)`, `batch threads (-tb)` | hardware concurrency | `-t` / `-tb` |
+| `batch size (-b)` | `2048` | `-b` |
+| `micro batch (-ub)` | `512` | `-ub` |
+| `jinja templates (--jinja)` | `on` | `--jinja` or `--no-jinja` |
+| `temperature`, `top-p`, `top-k`, `repeat penalty` | `0.8`, `0.95`, `40`, `1.0` | the flag, plus the same value in the chat request |
+| `thinking effort` | auto, detected from the template | `reasoning_effort` |
+| `reasoning format` | `auto` | `reasoning_format` |
+| `props endpoint (--props)` | `off`, `GET /props` is read-only anyway | `--props` |
+| `metrics endpoint (--metrics)` | `off` | `--metrics` |
+
+Every parameter is droppable again by walking its value range: step past the
+maximum and the flag leaves the command. Booleans have three states — not sent,
+`--flag`, `--no-flag` — so an explicit "no" stays reachable. Typing `default`,
+`auto`, `none`, `off` or an empty value in the inline editor also drops it.
+Per-model presets are saved to `~/.config/lazyllama/presets.json`.
+
+`GET /props` needs no flag, which is why the props row can stay on its default
+and the live context meter still works.
+
+### The manual
+
+Press `?` or `F1` on any screen and scroll with `↑` `↓`, `PgUp` `PgDn`, `Home`
+and `End`. `Esc` returns to exactly the screen and row you left, including from
+the middle of the config editor.
+
+The manual documents every parameter LazyLlama can affect, in seven groups:
+context, GPU and memory, threads and batching, sampling, thinking, templates,
+and the server endpoints. Each entry states three things: the flag as it appears
+on the command line, **llama.cpp's own documented default**, and what moving it
+actually changes — for example that `--cache-type-v q8_0` roughly halves the KV
+memory, or that `--samplers` applies temperature last, so it has the last word.
+
+The header shows the command your current config produces and a one-line summary
+of everything you have moved off its default, so the manual always describes the
+run in front of you. Parameters the editor does not expose (`--flash-attn`,
+`--cache-type-k`, `--load-mode`, `--numa`, `-sm`, `--swa-full`, `--context-shift`,
+`--mirostat`, `--min-p`, `--parallel`, `-cb`, `--api-key`, `--timeout`, …) are
+documented there too, and reach the server through **extra args**.
+
+### Thinking
+
+Thinking is two independent layers, and both are configurable:
+
+| Parameter | What it decides | Default |
+| --- | --- | --- |
+| `thinking effort` (`reasoning_effort`) | whether the model reasons and how hard — `none` disables it, the levels are handed to the chat template | not sent, so llama.cpp detects the model's own behaviour |
+| `reasoning format` (`reasoning_format`) | how the reasoning text comes back | `auto` |
+
+`reasoning_format` matters for this client in particular, because the collapsible
+thought block is built from `reasoning_content` deltas:
+
+| Value | Result |
+| --- | --- |
+| `auto`, `deepseek` | thoughts in `reasoning_content`, streaming deltas included — the Thought block works |
+| `none` | nothing is extracted; thinking stays inline in the answer text |
+| `deepseek-legacy` | `<think>` tags stay visible in the answer while streaming, so the Thought block stays empty and the tags land in the reply |
+
+Leaving both at their default is the sensible choice: the model thinks if it
+wants to, and the thinking arrives in a block you can fold. While the model
+reasons, that block shows a spinner and no duration; the first content token
+freezes it as `Thought for 8.6s`. `Ctrl+T` hides all of it, and the setting
+persists.
+
+The server-level counterparts (`--reasoning on|off|auto`, `--reasoning-budget`,
+`--reasoning-preserve`) and `chat_template_kwargs` such as
+`{"enable_thinking": false}` are documented in the manual and reachable through
+extra args.
 
 ### In chat
 
@@ -279,6 +351,7 @@ request instead of sending a default you did not choose.
 | `Ctrl+R` | toggle the transcript scrollbar |
 | `Ctrl+T` | show or hide model thinking |
 | `F2` | the launch config overlay |
+| `?`, `F1` | the parameter manual |
 | `Ctrl+Y` | copy the selection |
 | `Ctrl+C` | copy the selection, otherwise quit |
 
@@ -303,13 +376,6 @@ full width.
   counters that AMD and Intel publish, or `rocm-smi`; Apple Silicon and
   integrated graphics say `shared` instead of claiming a pool they do not have.
 * **System** — CPU with a meter, a meter for every core, memory and load.
-
-### Thinking
-
-Models that emit reasoning are requested with `reasoning_format: auto`, so
-llama.cpp splits thinking out of the answer. While the model reasons the thought
-block shows a spinner and no duration; the first content token freezes it as
-`Thought for 8.6s`. `Ctrl+T` hides all of it, and the setting persists.
 
 ### Mouse
 
@@ -366,6 +432,7 @@ src/
   paths.ts            XDG roots, the launcher shim, PATH, dependency closure
   settings.ts         settings.json and the models directory
   config.ts           launch config, per-model presets, CONFIG_FIELDS
+  manual.ts           the parameter manual: defaults, effects, what each one is
   models.ts           .gguf discovery
   server.ts           one llama-server: spawn, readiness, REST and SSE
   perf.ts             /slots and /props readers for the live meters
@@ -376,10 +443,11 @@ src/
     controller.ts     session state machine, keymap owner, perf polling
     chatView.ts       the chat column: transcript, prompt, side panel
     hubView.ts        model picker and the data-driven config editor
+    manualView.ts     the `?` screen that renders src/manual.ts
     installView.ts    the wizard's screens
     transcript.ts prompt.ts sidebar.ts splashView.ts
     theme.ts meter.ts spinner.ts keys.ts bindings.ts layout.ts
-test/                 11 suites, no network and no TTY required
+test/                 12 suites, no network and no TTY required
 docs/                 the OpenTUI parity notes
 ```
 
@@ -406,7 +474,8 @@ which records the OpenTUI traps this project has already hit.
 - [x] Managed `llama-server` with a hardware-aware setup wizard
 - [x] Every llama.cpp prebuilt backend, with device verification and fallbacks
 - [x] OpenCode-style session view, prompt and side panel
-- [x] Toggleable launch parameters
+- [x] Launch parameters that are only sent when chosen
+- [x] In-app parameter manual, and configurable thinking effort
 - [x] Two-step Esc that interrupts generation
 - [x] Live context meter and model thinking
 - [ ] Persist and resume conversations
