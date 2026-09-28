@@ -1,6 +1,7 @@
 import type { CliRenderer, KeyEvent } from "@opentui/core";
 import {
   applyFieldEdit,
+  configField,
   fieldDisplay,
   loadPreset as loadStoredPreset,
   modelDisplayName,
@@ -31,9 +32,11 @@ import {
   isTabForward,
   isUpKey,
   Keymap,
+  matchesKeySpec,
   type KeymapContext,
 } from "./keys.js";
 import { meterTokens } from "./meter.js";
+import { ManualView, type ManualScrollCommand } from "./manualView.js";
 import { destroyRenderer } from "./opentui.js";
 import { createShell } from "./shell.js";
 import { SplashView } from "./splashView.js";
@@ -54,8 +57,9 @@ import type {
 // footer row, with the config overlay printing its own key line).
 const HINTS: Record<Screen, string> = {
   splash: "press any key",
-  models: "↑/↓ select · ←/→ move · Enter open · r refresh",
-  edit: "↑/↓ move · ←/→ adjust · Tab groups · Enter edit · s save · Esc back · Ctrl+C quit",
+  models: "↑/↓ select · ←/→ move · Enter open · r refresh · ? manual",
+  edit: "↑/↓ move · ←/→ adjust · Tab groups · Enter edit · s save · ? manual · Esc back · Ctrl+C quit",
+  manual: "↑/↓ scroll · PgUp/PgDn page · ? where this comes from · Esc back · Ctrl+C quit",
   chat: "",
 };
 
@@ -64,6 +68,7 @@ const HINTS: Record<Screen, string> = {
 const COMPACT_HINTS: Partial<Record<Screen, string>> = {
   models: "↑/↓ select · Enter open · r refresh",
   edit: "↑/↓ move · ←/→ adjust · Enter edit · s save · Esc back",
+  manual: "↑/↓ scroll · Esc back",
 };
 
 const FOOTER_SIDE_PADDING = 4;
@@ -78,6 +83,25 @@ export function hintsFor(width: number, screen: Screen, meta: string): string {
   if (compact !== undefined && compact.length <= available) return compact;
   return "";
 }
+
+// The manual is driven by the controller rather than by the focused scroller,
+// because the controller's key listener runs first and would otherwise swallow
+// these keys before the renderable ever saw them. The specs mirror the chat
+// scroll bindings, so both scrollables feel the same.
+const MANUAL_SCROLL_KEYS: Array<[string, ManualScrollCommand]> = [
+  ["up", "line-up"],
+  ["down", "line-down"],
+  ["pageup", "page-up"],
+  ["pagedown", "page-down"],
+  ["ctrl+alt+u", "half-page-up"],
+  ["ctrl+alt+d", "half-page-down"],
+  ["ctrl+alt+y", "line-up"],
+  ["ctrl+alt+e", "line-down"],
+  ["home", "top"],
+  ["ctrl+g", "top"],
+  ["end", "bottom"],
+  ["ctrl+alt+g", "bottom"],
+];
 
 const INTERRUPT_WINDOW_MS = 5000;
 
@@ -103,6 +127,10 @@ export function createAppUi(
   let contextUsed: number | undefined;
   let contextTotal: number | undefined;
   let configOpen = false;
+  // The manual is an overlay on top of whatever screen opened it, so Esc
+  // returns to the exact row the user left, not just to the top of a screen.
+  let manualReturn: Screen = "models";
+  let manualFocusId: string | null = null;
   // Tracked as a plain string: TextRenderable.content reads back as StyledText.
   let metaLine = "";
   let hubStatusText = "";
@@ -127,6 +155,7 @@ export function createAppUi(
     },
     onConfirm: () => confirmHub(),
   }, theme);
+  const manual = new ManualView(renderer, theme);
   const chat = new ChatScreen(
     renderer,
     theme,
@@ -140,6 +169,7 @@ export function createAppUi(
   shell.body.add(hub.body);
   shell.body.add(chat.column);
   shell.body.add(chat.sidebarBody());
+  shell.body.add(manual.body);
 
   const keymap = new Keymap();
   const commandContext: SessionCommandContext = {
@@ -319,6 +349,7 @@ export function createAppUi(
         temp: cfg.temp,
         topP: cfg.topP,
         topK: cfg.topK,
+        thinking: cfg.thinking,
         reasoning: cfg.reasoning,
       },
     });
@@ -329,6 +360,9 @@ export function createAppUi(
     shell.footer.visible = !chatVisible;
     splash.setVisible(screen === "splash");
     hub.setVisible(screen === "models" || screen === "edit");
+    const manualVisible = screen === "manual";
+    if (manualVisible) manual.setConfig(cfg);
+    manual.setVisible(manualVisible);
     if (chatVisible) {
       if (configOpen) {
         chat.showConfig(cfg);
@@ -389,6 +423,30 @@ export function createAppUi(
       return;
     }
     enterModels(0);
+  }
+
+  // The manual is reachable from every screen and always returns to it.
+  function toggleManual(): void {
+    if (screen === "manual") {
+      exitManual();
+      return;
+    }
+    manualReturn = screen;
+    manualFocusId = renderer.currentFocusedRenderable?.id ?? null;
+    screen = "manual";
+    applyLayout();
+  }
+
+  function exitManual(): void {
+    const back = manualReturn === "manual" ? "models" : manualReturn;
+    screen = back;
+    if (back === "edit") {
+      if (manualFocusId !== null) hub.focusById(manualFocusId);
+      else hub.refreshEditor(cfg);
+    } else if (back === "models") {
+      hub.refreshModels(buildModelEntries(localModels));
+    }
+    applyLayout();
   }
 
   function backToModels(): void {
@@ -597,6 +655,25 @@ export function createAppUi(
       }
       return;
     }
+    // `?` is only claimed once no text input is open, so it still types
+    // normally inside the inline editor.
+    if (name === "?" || key.name === "f1") {
+      toggleManual();
+      key.stopPropagation();
+      return;
+    }
+    if (screen === "manual") {
+      // Scrolling is handled here, and everything else stops too, so a stray
+      // Enter cannot reach the chat keymap behind the screen.
+      if (isEscapeKey(key)) exitManual();
+      else {
+        const scroll = MANUAL_SCROLL_KEYS.find(([spec]) => matchesKeySpec(key, spec));
+        if (scroll) manual.scroll(scroll[1]);
+      }
+      key.stopPropagation();
+      key.preventDefault();
+      return;
+    }
     if (screen === "models") {
       // Up/down belong to the focused model Select; left/right mirror them so
       // every footer-advertised arrow works.
@@ -692,21 +769,13 @@ export function createAppUi(
     } else if (name === "right" || name === "+" || name === "=") {
       bumpContextSize(1024);
     } else if (name === "g") {
-      cfg = { ...cfg, gpuLayers: cfg.gpuLayers === "auto" ? "0" : "auto" };
-      deps.onConfigChange(cfg);
-      chat.showConfig(cfg);
+      cycleConfigField("gpuLayers");
     } else if (name === "j") {
-      cfg = { ...cfg, jinja: !cfg.jinja };
-      deps.onConfigChange(cfg);
-      chat.showConfig(cfg);
+      cycleConfigField("jinja");
     } else if (name === "p") {
-      cfg = { ...cfg, enableProps: !cfg.enableProps };
-      deps.onConfigChange(cfg);
-      chat.showConfig(cfg);
+      cycleConfigField("enableProps");
     } else if (name === "m") {
-      cfg = { ...cfg, enableMetrics: !cfg.enableMetrics };
-      deps.onConfigChange(cfg);
-      chat.showConfig(cfg);
+      cycleConfigField("enableMetrics");
     } else if (name === "s") {
       deps.onConfigChange({ ...cfg });
       chat.showConfig(cfg);
@@ -715,6 +784,16 @@ export function createAppUi(
     }
     syncSidebarModel();
     return true;
+  }
+
+  // The overlay's single-letter keys step the matching editor field, so they
+  // walk the same states (default -> on -> off -> default) the editor does.
+  function cycleConfigField(key: string): void {
+    const def = configField(key);
+    if (!def) return;
+    cfg = nudgeField(cfg, def, 1);
+    deps.onConfigChange(cfg);
+    chat.showConfig(cfg);
   }
 
   function handleResize(width: number, height: number): void {

@@ -61,7 +61,8 @@ export function requiredEditorRows(
   groupCount: number,
   density: EditorDensity,
 ): number {
-  const chrome = 3; // title, action row, status line
+  // Title, the blank row under it, the action row and the status line.
+  const chrome = 4;
   if (density === "compact") return chrome + groupCount + fieldCount;
   return chrome + groupCount + fieldCount + groupCount * 2 + Math.max(0, groupCount - 1);
 }
@@ -87,6 +88,7 @@ const SELECTED_MARKER = "▸";
 export class HubView {
   readonly body: BoxRenderable;
   private readonly title: TextRenderable;
+  private readonly titleRow: BoxRenderable;
   private readonly modelPanel: BoxRenderable;
   private readonly emptyNotice: TextRenderable;
   private readonly modelSelect: SelectRenderable;
@@ -122,7 +124,11 @@ export class HubView {
       paddingLeft: 2,
       paddingRight: 2,
     });
+    // The screen title sits in its own row with a blank line under it, so the
+    // header reads as a header and never touches the first panel below it.
+    this.titleRow = surface(renderer, { id: "hub-title-row", flexShrink: 0, paddingBottom: 1 });
     this.title = staticText(renderer, { id: "hub-title", fg: theme.text, bold: true });
+    this.titleRow.add(this.title);
 
     this.modelPanel = surface(renderer, {
       id: "hub-models-panel",
@@ -232,7 +238,7 @@ export class HubView {
     for (const action of this.actions) this.actionRow.add(action.box);
     this.status = staticText(renderer, { id: "hub-status", fg: theme.muted });
 
-    this.body.add(this.title);
+    this.body.add(this.titleRow);
     this.body.add(this.modelPanel);
     this.body.add(this.actionRow);
     this.body.add(this.editorGroupsWrap);
@@ -351,6 +357,20 @@ export class HubView {
     } else if (!this.focusedEditorStop()) {
       this.groups[0]?.select.focus();
     }
+  }
+
+  // Re-focus a control by id, so returning from the manual lands on the row the
+  // user left rather than the top of the editor.
+  focusById(id: string): void {
+    const group = this.groups.find((item) => item.select.id === id);
+    if (group) {
+      group.select.focus();
+      this.markGroups(group);
+      this.editorGroups.scrollChildIntoView(group.box.id);
+      return;
+    }
+    const action = this.actions.find((item) => item.box.id === id);
+    action?.box.focus();
   }
 
   focusNextEditorControl(): void {

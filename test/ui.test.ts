@@ -285,12 +285,12 @@ describe("OpenTUI Enter handling", () => {
   });
 
   test("editor density budgets every field with scroll fallback", () => {
-    expect(requiredEditorRows(19, 5, "comfortable")).toBe(41);
-    expect(requiredEditorRows(19, 5, "compact")).toBe(27);
-    expect(selectEditorDensity(42, 19, 5)).toBe("comfortable");
-    expect(selectEditorDensity(41, 19, 5)).toBe("comfortable");
-    expect(selectEditorDensity(40, 19, 5)).toBe("compact");
-    expect(selectEditorDensity(24, 19, 5)).toBe("compact");
+    expect(requiredEditorRows(20, 5, "comfortable")).toBe(43);
+    expect(requiredEditorRows(20, 5, "compact")).toBe(29);
+    expect(selectEditorDensity(44, 20, 5)).toBe("comfortable");
+    expect(selectEditorDensity(43, 20, 5)).toBe("comfortable");
+    expect(selectEditorDensity(42, 20, 5)).toBe("compact");
+    expect(selectEditorDensity(24, 20, 5)).toBe("compact");
   });
 
   test("lateral arrows move model selection", async () => {
@@ -317,7 +317,7 @@ describe("OpenTUI Enter handling", () => {
       await app.waitForFrame((frame) => frame.includes("demo.gguf"));
       await pressAndSettle(app, () => app.mockInput.pressEnter());
       await app.waitForFrame((frame) => frame.includes("Configure —"));
-      for (let i = 0; i < 21; i += 1) {
+      for (let i = 0; i < 22; i += 1) {
         app.mockInput.pressArrow("down");
       }
       await app.flush();
@@ -339,7 +339,7 @@ describe("OpenTUI Enter handling", () => {
       await app.waitForFrame((frame) => frame.includes("demo.gguf"));
       await pressAndSettle(app, () => app.mockInput.pressEnter());
       await app.waitForFrame((frame) => frame.includes("Configure —"));
-      for (let i = 0; i < 21; i += 1) {
+      for (let i = 0; i < 22; i += 1) {
         app.mockInput.pressArrow("down");
       }
       await app.flush();
@@ -348,9 +348,9 @@ describe("OpenTUI Enter handling", () => {
       await pressAndSettle(app, () => app.mockInput.pressKey("F2"));
       await app.waitForFrame((frame) => frame.includes("Config"));
       await pressAndSettle(app, () => app.mockInput.pressArrow("right"));
-      await app.waitForFrame((frame) => frame.includes("-c 1024"));
+      await app.waitForFrame((frame) => frame.includes("context size (-c): 1024"));
       await pressAndSettle(app, () => app.mockInput.pressArrow("left"));
-      await app.waitForFrame((frame) => frame.includes("Context  -c 0"));
+      await app.waitForFrame((frame) => frame.includes("context size (-c): 0"));
     } finally {
       app.ui.destroy();
     }
@@ -391,7 +391,7 @@ describe("OpenTUI Enter handling", () => {
       expect(editor).not.toContain("▶");
       // Arrow-down walks every field in every group, then the action buttons.
       // Scrolling brings later groups into view.
-      for (let i = 0; i < 18; i += 1) {
+      for (let i = 0; i < 19; i += 1) {
         app.mockInput.pressArrow("down");
       }
       await app.flush();
@@ -454,10 +454,14 @@ describe("OpenTUI Enter handling", () => {
 
       await pressAndSettle(app, () => app.mockInput.pressKey("F2"));
       await app.waitForFrame((frame) => frame.includes("Config"));
+      // Both rows start at their default state, so one keypress switches the
+      // flag on and a second walks it to the next value.
       await pressAndSettle(app, () => app.mockInput.pressKey("g"));
-      await app.waitForFrame((frame) => frame.includes("-ngl 0"));
+      await app.waitForFrame((frame) => frame.includes("gpu layers (-ngl): auto"));
+      await pressAndSettle(app, () => app.mockInput.pressKey("g"));
+      await app.waitForFrame((frame) => frame.includes("gpu layers (-ngl): 0"));
       await pressAndSettle(app, () => app.mockInput.pressKey("j"));
-      await app.waitForFrame((frame) => frame.includes("--no-jinja"));
+      await app.waitForFrame((frame) => frame.includes("jinja templates (--jinja): on"));
       await pressAndSettle(app, () => app.mockInput.pressEscape());
       await app.waitForFrame((frame) => frame.includes("Ask anything"));
     } finally {
@@ -472,7 +476,7 @@ async function enterChat(app: TestUi): Promise<void> {
   await app.waitForFrame((frame) => frame.includes("demo.gguf"));
   await pressAndSettle(app, () => app.mockInput.pressEnter());
   await app.waitForFrame((frame) => frame.includes("Configure —"));
-  for (let i = 0; i < 21; i += 1) app.mockInput.pressArrow("down");
+  for (let i = 0; i < 22; i += 1) app.mockInput.pressArrow("down");
   await app.flush();
   expect(app.renderer.currentFocusedRenderable?.id).toBe("hub-confirm");
   await pressAndSettle(app, () => app.mockInput.pressEnter());
@@ -714,8 +718,18 @@ describe("the gpu section of the side panel", () => {
     setup.renderer.root.add(panel.body);
     panel.setMode("column");
     panel.setData({
-      model: { name: "demo", source: "local", ctxSize: 8192, gpuLayers: "auto", temp: null, topP: 0.9, topK: 40, reasoning: "auto" },
-      server: { baseUrl: "http://127.0.0.1:8080", slotId: 0, nCtx: 8192, props: true, metrics: true, processing: false },
+      model: {
+        name: "demo",
+        source: "local",
+        ctxSize: 8192,
+        gpuLayers: "auto",
+        temp: null,
+        topP: 0.9,
+        topK: 40,
+        thinking: null,
+        reasoning: null,
+      },
+      server: { baseUrl: "http://127.0.0.1:8080", slotId: 0, nCtx: 8192, props: null, metrics: true, processing: false },
       context: { used: 100, total: 8192 },
       gpu,
       system: { cpuPct: 0.2, perCorePct: [0.1, 0.2], memUsedMiB: 1000, memTotalMiB: 16000, load1: 0.5 },
@@ -776,7 +790,7 @@ describe("side panel belongs to the chat screen only", () => {
       expect(editor).not.toContain("tok/s");
       expect(sidebar()?.visible).toBe(false);
 
-      for (let i = 0; i < 21; i += 1) app.mockInput.pressArrow("down");
+      for (let i = 0; i < 22; i += 1) app.mockInput.pressArrow("down");
       await app.flush();
       await pressAndSettle(app, () => app.mockInput.pressEnter());
       const chat = await app.waitForFrame((frame) => frame.includes("n_ctx"));
@@ -827,7 +841,7 @@ describe("editor fills the screen and scrolls from the right edge", () => {
       // Overflowing content paints the bar on the right edge of the column.
       expect(groups.verticalScrollBar.visible).toBe(true);
       expect(groups.verticalScrollBar.x).toBeGreaterThan(groups.width - 4);
-      for (let i = 0; i < 18; i += 1) app.mockInput.pressArrow("down");
+      for (let i = 0; i < 19; i += 1) app.mockInput.pressArrow("down");
       await app.flush();
       const frame = await app.waitForFrame((frame) => frame.includes("extra args (raw)"));
       expect(groups.scrollTop).toBeGreaterThan(0);
@@ -888,7 +902,39 @@ describe("chat message shape", () => {
 });
 
 describe("toggleable options in the config editor", () => {
-  test("sampling parameters can be switched off and back on", async () => {
+  test("only the context group ships a value; everything else starts at llama.cpp's default", async () => {
+    const app = await createTestUi();
+    try {
+      await app.waitForFrame((frame) => frame.includes("loading lazyllama"));
+      await pressAndSettle(app, () => app.mockInput.pressKey("a"));
+      await app.waitForFrame((frame) => frame.includes("demo.gguf"));
+      await pressAndSettle(app, () => app.mockInput.pressEnter());
+      const frame = await app.waitForFrame((frame) => frame.includes("Configure —"));
+      // Context is on, with the value llama.cpp documents.
+      expect(frame).toContain("context size (-c): 0");
+      expect(frame).toContain("rope scale (--rope-scale): 1");
+      expect(frame).toContain("keep tokens (--keep): 0");
+      // Every other group reads `default (x)`: the flag is not on the command.
+      expect(frame).toContain("gpu layers (-ngl): default (auto)");
+      expect(frame).toContain("threads (-t): default (hardware threads)");
+      expect(frame).toContain("batch size (-b): default (2048)");
+      expect(frame).toContain("micro batch (-ub): default (512)");
+      expect(frame).toContain("jinja templates (--jinja): default (on)");
+      expect(frame).toContain("temperature (--temp): default (0.8)");
+      expect(frame).toContain("top-p (--top-p): default (0.95)");
+      expect(frame).toContain("top-k (--top-k): default (40)");
+      expect(frame).toContain("repeat penalty (--repeat-penalty): default (1.0)");
+      // Thinking is two layers, both absent by default.
+      expect(frame).toContain("thinking effort (reasoning_effort): default (auto (from the template))");
+      expect(frame).toContain("reasoning format (reasoning_format): default (auto)");
+      expect(frame).toContain("props endpoint (--props): default (off (GET only))");
+      expect(frame).toContain("metrics endpoint (--metrics): default (off)");
+    } finally {
+      app.ui.destroy();
+    }
+  });
+
+  test("a parameter walks its own values and drops back to the llama.cpp default", async () => {
     const app = await createTestUi();
     try {
       await app.waitForFrame((frame) => frame.includes("loading lazyllama"));
@@ -896,22 +942,89 @@ describe("toggleable options in the config editor", () => {
       await app.waitForFrame((frame) => frame.includes("demo.gguf"));
       await pressAndSettle(app, () => app.mockInput.pressEnter());
       await app.waitForFrame((frame) => frame.includes("Configure —"));
-      // Nine fields precede temperature (3 context + 6 launch). Stepping past
-      // its maximum switches it off; stepping from off turns it back on.
+      // Nine fields precede temperature (3 context + 6 launch).
       const walk = async (count: number): Promise<void> => {
         for (let i = 0; i < count; i += 1) app.mockInput.pressArrow("down");
         await app.flush();
       };
       await walk(9);
-      let frame = await app.waitForFrame((frame) => frame.includes("temperature: 0.7"));
-      expect(frame).toContain("▸ temperature: 0.7");
-      for (let i = 0; i < 14; i += 1) app.mockInput.pressArrow("right");
+      let frame = await app.waitForFrame((frame) => frame.includes("▸ temperature"));
+      expect(frame).toContain("▸ temperature (--temp): default (0.8)");
+      // Right switches it on at the shipped value, then steps the range, and
+      // stepping past the maximum drops the flag again.
+      await pressAndSettle(app, () => app.mockInput.pressArrow("right"));
+      frame = await app.waitForFrame((frame) => frame.includes("▸ temperature"));
+      expect(frame).toContain("▸ temperature (--temp): 0.7");
+      for (let i = 0; i < 13; i += 1) app.mockInput.pressArrow("right");
       await app.flush();
-      frame = await app.waitForFrame((frame) => frame.includes("temperature: off"));
-      expect(frame).toContain("▸ temperature: off");
+      frame = await app.waitForFrame((frame) => frame.includes("▸ temperature (--temp): 2"));
+      await pressAndSettle(app, () => app.mockInput.pressArrow("right"));
+      frame = await app.waitForFrame((frame) => frame.includes("▸ temperature (--temp): default (0.8)"));
       await pressAndSettle(app, () => app.mockInput.pressArrow("left"));
-      frame = await app.waitForFrame((frame) => frame.includes("temperature: 2"));
-      expect(frame).toContain("▸ temperature: 2");
+      frame = await app.waitForFrame((frame) => frame.includes("▸ temperature (--temp): 2"));
+    } finally {
+      app.ui.destroy();
+    }
+  });
+
+  test("an optional boolean reaches the explicit no-flag state", async () => {
+    const app = await createTestUi();
+    try {
+      await app.waitForFrame((frame) => frame.includes("loading lazyllama"));
+      await pressAndSettle(app, () => app.mockInput.pressKey("a"));
+      await app.waitForFrame((frame) => frame.includes("demo.gguf"));
+      await pressAndSettle(app, () => app.mockInput.pressEnter());
+      await app.waitForFrame((frame) => frame.includes("Configure —"));
+      // Eight fields precede jinja (3 context + gpu layers, threads, batch
+      // threads, batch size, micro batch).
+      for (let i = 0; i < 8; i += 1) app.mockInput.pressArrow("down");
+      await app.flush();
+      let frame = await app.waitForFrame((frame) => frame.includes("▸ jinja"));
+      expect(frame).toContain("▸ jinja templates (--jinja): default (on)");
+      await pressAndSettle(app, () => app.mockInput.pressArrow("right"));
+      frame = await app.waitForFrame((frame) => frame.includes("▸ jinja templates (--jinja): on"));
+      await pressAndSettle(app, () => app.mockInput.pressArrow("right"));
+      frame = await app.waitForFrame((frame) => frame.includes("▸ jinja templates (--jinja): off"));
+      await pressAndSettle(app, () => app.mockInput.pressArrow("right"));
+      frame = await app.waitForFrame((frame) => frame.includes("▸ jinja templates (--jinja): default (on)"));
+    } finally {
+      app.ui.destroy();
+    }
+  });
+
+  test("thinking effort and reasoning format cycle their own values", async () => {
+    const app = await createTestUi();
+    try {
+      await app.waitForFrame((frame) => frame.includes("loading lazyllama"));
+      await pressAndSettle(app, () => app.mockInput.pressKey("a"));
+      await app.waitForFrame((frame) => frame.includes("demo.gguf"));
+      await pressAndSettle(app, () => app.mockInput.pressEnter());
+      await app.waitForFrame((frame) => frame.includes("Configure —"));
+      for (let i = 0; i < 13; i += 1) app.mockInput.pressArrow("down");
+      await app.flush();
+      let frame = await app.waitForFrame((frame) => frame.includes("▸ thinking effort"));
+      expect(frame).toContain("▸ thinking effort (reasoning_effort): default (auto (from the template))");
+      // The dial runs max -> xhigh -> high -> ... -> none, and the default
+      // state is one step of the same ring, so it can always be dropped.
+      await pressAndSettle(app, () => app.mockInput.pressArrow("right"));
+      frame = await app.waitForFrame((frame) => frame.includes("▸ thinking effort (reasoning_effort): max"));
+      for (let i = 0; i < 6; i += 1) app.mockInput.pressArrow("right");
+      await app.flush();
+      frame = await app.waitForFrame((frame) => frame.includes("▸ thinking effort (reasoning_effort): none"));
+      // One more step returns to the default state, which is how thinking is
+      // left to the model again.
+      await pressAndSettle(app, () => app.mockInput.pressArrow("right"));
+      frame = await app.waitForFrame((frame) => frame.includes("▸ thinking effort (reasoning_effort): default (auto (from the template))"));
+      for (let i = 0; i < 1; i += 1) app.mockInput.pressArrow("down");
+      await app.flush();
+      frame = await app.waitForFrame((frame) => frame.includes("▸ reasoning format"));
+      expect(frame).toContain("▸ reasoning format (reasoning_format): default (auto)");
+      // `auto` is reachable as an explicit state: it pins the same behaviour
+      // the default state leaves to the server, in case that ever changes.
+      await pressAndSettle(app, () => app.mockInput.pressArrow("right"));
+      frame = await app.waitForFrame((frame) => frame.includes("▸ reasoning format (reasoning_format): auto"));
+      await pressAndSettle(app, () => app.mockInput.pressArrow("right"));
+      frame = await app.waitForFrame((frame) => frame.includes("▸ reasoning format (reasoning_format): deepseek"));
     } finally {
       app.ui.destroy();
     }
@@ -927,14 +1040,14 @@ describe("toggleable options in the config editor", () => {
       await app.waitForFrame((frame) => frame.includes("Configure —"));
       for (let i = 0; i < 9; i += 1) app.mockInput.pressArrow("down");
       for (let i = 0; i < 6; i += 1) app.mockInput.pressArrow("right");
-      for (let i = 0; i < 5; i += 1) app.mockInput.pressArrow("down");
+      for (let i = 0; i < 6; i += 1) app.mockInput.pressArrow("down");
       for (let i = 0; i < 4; i += 1) app.mockInput.pressArrow("left");
       await app.flush();
       const frame = await app.waitForFrame((frame) => frame.includes("▸"));
       const marked = frame.split("\n").filter((line) => line.includes("▸"));
       expect(marked.length).toBe(1);
       // The marker follows the focused field, not a stale one: 9 downs reach
-      // temperature, 5 more land in the network group.
+      // temperature, 6 more land on host, the first row of the network group.
       expect(app.renderer.currentFocusedRenderable?.id).toBe("hub-group-network-select");
       expect(marked[0]).toContain("host");
     } finally {
@@ -1025,6 +1138,144 @@ describe("thinking and thought never coexist", () => {
   });
 });
 
+describe("the in-app manual", () => {
+  test("opens from the model picker and returns to it", async () => {
+    const app = await createTestUi({ width: 120, height: 40 });
+    try {
+      await app.waitForFrame((frame) => frame.includes("loading lazyllama"));
+      await pressAndSettle(app, () => app.mockInput.pressKey("a"));
+      await app.waitForFrame((frame) => frame.includes("Select a model"));
+      await pressAndSettle(app, () => app.mockInput.pressKey("?", { shift: true }));
+      const manual = await app.waitForFrame((frame) => frame.includes("Manual"));
+      // The command in force is printed at the top, so the manual is about the
+      // run in front of you and not a generic document. No model is picked yet.
+      expect(manual).toContain("llama-server (no model selected yet)");
+      // Every parameter carries llama.cpp's own default and an explanation.
+      expect(manual).toContain("Context");
+      expect(manual).toContain("llama.cpp default: 0 = loaded from model");
+      expect(manual).toContain("GPU and memory");
+      // A parameter the editor exposes shows the value in force next to it.
+      expect(manual).toContain("-ngl auto|all|N   →  default (auto)");
+      // Only what was chosen is on the command, and that is stated up front.
+      expect(manual).toContain("default (x)");
+      await pressAndSettle(app, () => app.mockInput.pressEscape());
+      await app.waitForFrame((frame) => frame.includes("Select a model"));
+    } finally {
+      app.ui.destroy();
+    }
+  });
+
+  test("opens from the config editor, shows live values, and returns to the same row", async () => {
+    const app = await createTestUi({ width: 120, height: 40 });
+    try {
+      await app.waitForFrame((frame) => frame.includes("loading lazyllama"));
+      await pressAndSettle(app, () => app.mockInput.pressKey("a"));
+      await app.waitForFrame((frame) => frame.includes("demo.gguf"));
+      await pressAndSettle(app, () => app.mockInput.pressEnter());
+      await app.waitForFrame((frame) => frame.includes("Configure —"));
+      // Move to temperature and set it, so the manual has a non-default value
+      // to show for the parameter the editor exposes.
+      for (let i = 0; i < 9; i += 1) app.mockInput.pressArrow("down");
+      await app.flush();
+      await pressAndSettle(app, () => app.mockInput.pressArrow("right"));
+      await app.waitForFrame((frame) => frame.includes("temperature (--temp): 0.7"));
+      await pressAndSettle(app, () => app.mockInput.pressKey("?", { shift: true }));
+      const manual = await app.waitForFrame((frame) => frame.includes("In force:"));
+      // What the config changed is on the first screen, before any scrolling.
+      expect(manual).toContain("In force: temperature 0.7");
+      expect(manual).toContain("llama-server -m /models/demo.gguf -c 0 --temp 0.7");
+      // Esc returns to the row the user left, not the top of the editor.
+      await pressAndSettle(app, () => app.mockInput.pressEscape());
+      const back = await app.waitForFrame((frame) => frame.includes("Configure —"));
+      expect(back).toContain("▸ temperature (--temp): 0.7");
+    } finally {
+      app.ui.destroy();
+    }
+  });
+
+  test("the chat has a manual too, and its keys do not leak through", async () => {
+    const app = await createTestUi({ width: 120, height: 40 });
+    try {
+      await enterChat(app);
+      await pressAndSettle(app, () => app.mockInput.pressKey("?", { shift: true }));
+      await app.waitForFrame((frame) => frame.includes("Manual"));
+      // Enter must not reach the chat keymap while the manual is open.
+      await pressAndSettle(app, () => app.mockInput.pressEnter());
+      expect(app.sent.length).toBe(0);
+      await pressAndSettle(app, () => app.mockInput.pressKey("F1"));
+      // Already open: the same key closes it again.
+      await app.waitForFrame((frame) => frame.includes("Ask anything"));
+      await pressAndSettle(app, () => app.mockInput.pressKey("?", { shift: true }));
+      await app.waitForFrame((frame) => frame.includes("Manual"));
+      await pressAndSettle(app, () => app.mockInput.pressEscape());
+      await app.waitForFrame((frame) => frame.includes("Ask anything"));
+    } finally {
+      app.ui.destroy();
+    }
+  });
+
+  test("the manual scrolls with the same keys as the transcript", async () => {
+    // The mock input takes escape sequences for these, not names: HOME/END are
+    // exported as KeyCodes, and the page keys have no name at all.
+    const PAGE_DOWN = "\u001B[6~";
+    const END = "\u001B[F";
+    const HOME = "\u001B[H";
+    const app = await createTestUi({ width: 120, height: 40 });
+    try {
+      await app.waitForFrame((frame) => frame.includes("loading lazyllama"));
+      await pressAndSettle(app, () => app.mockInput.pressKey("a"));
+      await app.waitForFrame((frame) => frame.includes("Select a model"));
+      await pressAndSettle(app, () => app.mockInput.pressKey("?", { shift: true }));
+      await app.waitForFrame((frame) => frame.includes("Manual"));
+      const scroller = app.renderer.root.findDescendantById("manual-scroll") as unknown as {
+        scrollTop: number;
+      };
+      // The whole manual is far taller than the screen.
+      expect(scroller.scrollTop).toBe(0);
+      await pressAndSettle(app, () => app.mockInput.pressArrow("down"));
+      expect(scroller.scrollTop).toBe(1);
+      await pressAndSettle(app, () => app.mockInput.pressKey(PAGE_DOWN));
+      expect(scroller.scrollTop).toBeGreaterThan(1);
+      await pressAndSettle(app, () => app.mockInput.pressKey(END));
+      const bottom = scroller.scrollTop;
+      expect(bottom).toBeGreaterThan(1);
+      await pressAndSettle(app, () => app.mockInput.pressKey(HOME));
+      expect(scroller.scrollTop).toBe(0);
+    } finally {
+      app.ui.destroy();
+    }
+  });
+
+  test("the thinking layers are explained where they are configured", async () => {
+    const app = await createTestUi({ width: 120, height: 40 });
+    try {
+      await app.waitForFrame((frame) => frame.includes("loading lazyllama"));
+      await pressAndSettle(app, () => app.mockInput.pressKey("a"));
+      await app.waitForFrame((frame) => frame.includes("demo.gguf"));
+      await pressAndSettle(app, () => app.mockInput.pressEnter());
+      await app.waitForFrame((frame) => frame.includes("Configure —"));
+      await pressAndSettle(app, () => app.mockInput.pressKey("?", { shift: true }));
+      await app.waitForFrame((frame) => frame.includes("Manual"));
+      // Thinking sits below the fold, so the entry is only reachable by
+      // scrolling: the group has to be scrolled into view like any other.
+      let manual = "";
+      for (let page = 0; page < 12 && !manual.includes("reasoning_effort"); page += 1) {
+        await pressAndSettle(app, () => app.mockInput.pressKey("\u001B[6~"));
+        manual = await app.waitForFrame((frame) => frame.includes("llama.cpp default:"), {
+          maxPasses: 20,
+        });
+      }
+      // The manual spells out that effort and format are separate parameters,
+      // and what each one changes.
+      expect(manual).toContain("reasoning_effort");
+      expect(manual).toContain("reasoning_format");
+      expect(manual).toContain("Thinking");
+    } finally {
+      app.ui.destroy();
+    }
+  });
+});
+
 describe("hub screens have no header, only a footer", () => {
   test("the command reference lives on the last row", async () => {
     const app = await createTestUi({ width: 130, height: 30 });
@@ -1048,7 +1299,7 @@ describe("hub screens have no header, only a footer", () => {
       expect(editor).not.toContain("lazyllama");
 
       // Chat keeps OpenCode's chrome-free layout.
-      for (let i = 0; i < 21; i += 1) app.mockInput.pressArrow("down");
+      for (let i = 0; i < 22; i += 1) app.mockInput.pressArrow("down");
       await app.flush();
       await pressAndSettle(app, () => app.mockInput.pressEnter());
       const chat = await app.waitForFrame((frame) => frame.includes("Ask anything"));
