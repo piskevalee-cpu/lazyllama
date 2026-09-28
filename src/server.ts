@@ -4,6 +4,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import type { ReasoningEffort, ReasoningFormat } from "./config.js";
 import { findServerBinary, readReceipt, serverInstallDir } from "./installer.js";
 
 // Resolution order: explicit env -> installer receipt -> installer dir
@@ -271,7 +272,10 @@ export interface StreamChatOptions {
   idSlot?: number;
   cachePrompt?: boolean;
   nKeep?: number;
-  reasoningFormat?: "auto" | "none";
+  /** How thinking comes back: `auto` is the server default, `none` leaves it inline. */
+  reasoningFormat?: ReasoningFormat;
+  /** How hard the template thinks: `none` disables thinking entirely. */
+  reasoningEffort?: ReasoningEffort;
   /** Injected in tests; defaults to the wall clock. */
   now?: () => number;
   /** Called with each thinking delta, when the server separates reasoning. */
@@ -288,7 +292,10 @@ export interface ChatRequestBody {
   id_slot: number;
   cache_prompt: boolean;
   n_keep: number;
-  reasoning_format: "auto" | "none";
+  // Omitted entirely when the config leaves them at their default state, so
+  // the server's own --reasoning-format / template default decides.
+  reasoning_format?: ReasoningFormat;
+  reasoning_effort?: ReasoningEffort;
 }
 
 // Build the exact `/v1/chat/completions` payload. Pure so the conversation
@@ -297,7 +304,14 @@ export function buildChatRequestBody(
   messages: ChatMessage[],
   opts: Pick<
     StreamChatOptions,
-    "temperature" | "topP" | "topK" | "idSlot" | "cachePrompt" | "nKeep" | "reasoningFormat"
+    | "temperature"
+    | "topP"
+    | "topK"
+    | "idSlot"
+    | "cachePrompt"
+    | "nKeep"
+    | "reasoningFormat"
+    | "reasoningEffort"
   >,
 ): ChatRequestBody {
   return {
@@ -310,7 +324,8 @@ export function buildChatRequestBody(
     id_slot: opts.idSlot ?? 0,
     cache_prompt: opts.cachePrompt ?? true,
     n_keep: opts.nKeep ?? 0,
-    reasoning_format: opts.reasoningFormat ?? "auto",
+    reasoning_format: opts.reasoningFormat,
+    reasoning_effort: opts.reasoningEffort,
   };
 }
 

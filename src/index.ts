@@ -133,15 +133,16 @@ async function main(): Promise<void> {
             server.baseUrl(),
             {
               messages: transcript,
-              // null sampling params mean off: map to undefined so the key
-              // is left out of the request body and llama.cpp decides.
+              // A null tunables is off: map to undefined so the key is left out
+              // of the request body and llama.cpp decides.
               temperature: cfg.temp ?? undefined,
               topP: cfg.topP ?? undefined,
               topK: cfg.topK ?? undefined,
               idSlot: 0,
               cachePrompt: true,
               nKeep: cfg.keepTokens,
-              reasoningFormat: cfg.reasoning,
+              reasoningFormat: cfg.reasoning ?? undefined,
+              reasoningEffort: cfg.thinking ?? undefined,
               signal,
               onReasoning: (token) => stream.pushThinking(token),
             },

@@ -86,12 +86,28 @@ describe("server startup guards", () => {
     expect(body.stream_options).toEqual({ include_usage: true });
   });
 
-  test("reasoning is requested and thinking deltas are separated from content", () => {
+  test("thinking parameters are sent when set and omitted when not", () => {
     const messages = [{ role: "user" as const, content: "hi" }];
-    expect(buildChatRequestBody(messages, {}).reasoning_format).toBe("auto");
+    // Nothing configured: the key is absent, so llama.cpp applies its own
+    // --reasoning-format and template default.
+    const bare = buildChatRequestBody(messages, {});
+    expect(bare.reasoning_format).toBeUndefined();
+    expect(bare.reasoning_effort).toBeUndefined();
+    // The key may exist as undefined in the object, but the wire payload the
+    // server parses must not mention it at all.
+    expect(JSON.stringify(bare)).not.toContain("reasoning");
+    for (const format of ["none", "auto", "deepseek", "deepseek-legacy"] as const) {
+      expect(buildChatRequestBody(messages, { reasoningFormat: format }).reasoning_format).toBe(
+        format,
+      );
+    }
     expect(
-      buildChatRequestBody(messages, { reasoningFormat: "none" }).reasoning_format,
+      buildChatRequestBody(messages, { reasoningEffort: "none" }).reasoning_effort,
     ).toBe("none");
+    expect(buildChatRequestBody(messages, { reasoningEffort: "high" }).reasoning_effort).toBe("high");
+  });
+
+  test("thinking deltas are separated from the content stream", () => {
     const streamed = parseChatChunkEvent({
       choices: [{ delta: { reasoning_content: "think" } }],
     });

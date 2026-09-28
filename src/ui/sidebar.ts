@@ -9,6 +9,7 @@ import {
   type TextChunk,
 } from "@opentui/core";
 import { formatGiB, gibValue, pct } from "../ascii.js";
+import { configValue } from "../config.js";
 import type { GpuMemory } from "../vram.js";
 import { SIDEBAR_WIDTH, type SidebarMode } from "./layout.js";
 import { gradientFill, meterTokens } from "./meter.js";
@@ -21,19 +22,21 @@ export interface SidebarData {
     name: string;
     source: string;
     ctxSize: number;
-    gpuLayers: string;
-    /** Sampling values are nullable: a parameter the user switched off. */
+    /** Nullable tunables: null means the flag is not on the command. */
+    gpuLayers: string | null;
     temp: number | null;
     topP: number | null;
     topK: number | null;
-    reasoning: string;
+    thinking: string | null;
+    reasoning: string | null;
   };
   server: {
     baseUrl: string;
     slotId: number;
     nCtx?: number;
-    props: boolean;
-    metrics: boolean;
+    /** Null when the endpoint was left to llama.cpp's own default. */
+    props: boolean | null;
+    metrics: boolean | null;
     processing: boolean;
     tokPerSecond?: number;
   };
@@ -131,19 +134,16 @@ export function formatContextRows(context: SidebarData["context"]): SidebarRow[]
   ];
 }
 
-function optionalValue(value: number | null): string {
-  return value === null ? "off" : String(value);
-}
-
 export function formatModelRows(model: SidebarData["model"]): SidebarRow[] {
   return [
     { label: "name", value: model.name },
     { label: "source", value: model.source },
-    { label: "ngl", value: model.gpuLayers },
-    { label: "temp", value: optionalValue(model.temp) },
-    { label: "top-p", value: optionalValue(model.topP) },
-    { label: "top-k", value: optionalValue(model.topK) },
-    { label: "think", value: model.reasoning },
+    { label: "ngl", value: configValue("gpuLayers", model.gpuLayers) },
+    { label: "temp", value: configValue("temp", model.temp) },
+    { label: "top-p", value: configValue("topP", model.topP) },
+    { label: "top-k", value: configValue("topK", model.topK) },
+    { label: "think", value: configValue("thinking", model.thinking) },
+    { label: "reason", value: configValue("reasoning", model.reasoning) },
   ];
 }
 
@@ -156,8 +156,8 @@ export function formatServerRows(server: SidebarData["server"]): SidebarRow[] {
       tone: server.processing ? "accent" : "muted",
     },
     { label: "n_ctx", value: server.nCtx === undefined ? UNKNOWN : String(server.nCtx) },
-    { label: "props", value: server.props ? "on" : "off" },
-    { label: "metrics", value: server.metrics ? "on" : "off" },
+    { label: "props", value: configValue("enableProps", server.props) },
+    { label: "metrics", value: configValue("enableMetrics", server.metrics) },
     {
       label: "tok/s",
       value: server.tokPerSecond === undefined ? UNKNOWN : server.tokPerSecond.toFixed(1),

@@ -3,7 +3,16 @@
 // and keybindings; this class owns renderables and their layout.
 
 import { BoxRenderable, type CliRenderer, type TextRenderable } from "@opentui/core";
-import { modelDisplayName, type LaunchConfig } from "../config.js";
+import {
+  CONFIG_FIELDS,
+  CONFIG_GROUP_ORDER,
+  CONFIG_GROUP_TITLES,
+  fieldDisplay,
+  modelDisplayName,
+  type ConfigFieldGroup,
+  type ConfigFieldDef,
+  type LaunchConfig,
+} from "../config.js";
 import { staticText, surface } from "./components.js";
 import {
   promptMaxHeight,
@@ -415,13 +424,7 @@ export class ChatScreen {
     this.configOpen = true;
     this.configScrim.visible = true;
     this.prompt.blur();
-    this.configText.content = [
-      `Model    ${modelDisplayName(cfg.model)}`,
-      `Context  -c ${cfg.ctxSize}  --rope-scale ${cfg.ropeScale}  --keep ${cfg.keepTokens}`,
-      `Launch   -ngl ${cfg.gpuLayers}  -t ${cfg.threads}  -tb ${cfg.threadsBatch}  -b ${cfg.batchSize}  -ub ${cfg.ubatchSize}  ${cfg.jinja ? "--jinja" : "--no-jinja"}`,
-      `Sampling temp ${cfg.temp ?? "off"}  top-p ${cfg.topP ?? "off"}  top-k ${cfg.topK ?? "off"}  repeat ${cfg.repeatPenalty ?? "off"}  think ${cfg.reasoning}`,
-      `Extra    ${cfg.extra.length > 0 ? cfg.extra.join(" ") : "(none)"}   server ${cfg.host}:${cfg.port}`,
-    ].join("\n");
+    this.configText.content = configOverlayText(cfg);
   }
 
   hideConfig(): void {
@@ -437,23 +440,59 @@ export class ChatScreen {
   }
 }
 
+// The in-chat overlay shows the context group in full (it is the only group
+// that ships a value) and only the parameters that were moved off llama.cpp's
+// default, so the block always fits without scrolling. Every line is produced
+// by `fieldDisplay`, so the overlay cannot drift from the editor.
+export function configOverlayText(cfg: LaunchConfig): string {
+  const lines: string[] = [`Model    ${modelDisplayName(cfg.model)}`];
+  const changed = new Map<ConfigFieldGroup, string[]>();
+  for (const def of CONFIG_FIELDS) {
+    if (def.group === "context") {
+      const contextRows = changed.get(def.group) ?? [];
+      contextRows.push(`${def.label}: ${fieldDisplay(cfg, def)}`);
+      changed.set(def.group, contextRows);
+      continue;
+    }
+    if (!def.optional) continue; // addresses, always shown in their own line
+    if (isDefaultState(cfg, def)) continue;
+    const rows = changed.get(def.group) ?? [];
+    rows.push(`${def.label}: ${fieldDisplay(cfg, def)}`);
+    changed.set(def.group, rows);
+  }
+  for (const group of CONFIG_GROUP_ORDER) {
+    const rows = changed.get(group);
+    if (!rows || rows.length === 0) continue;
+    lines.push(`${CONFIG_GROUP_TITLES[group]}  ${rows.join("  ")}`);
+  }
+  lines.push(`server   ${cfg.host}:${cfg.port}   (? opens the manual)`);
+  return lines.join("\n");
+}
+
+// A parameter is at its default state when nothing is sent for it, which for
+// every optional field is `null`.
+function isDefaultState(cfg: LaunchConfig, def: ConfigFieldDef): boolean {
+  return (cfg as unknown as Record<string, unknown>)[def.key] === null;
+}
+
 export function emptySidebarData(cfg?: LaunchConfig): SidebarData {
   return {
     model: {
       name: cfg ? modelDisplayName(cfg.model) : "(no model)",
       source: cfg?.model?.kind === "hf" ? "huggingface" : "local",
       ctxSize: cfg?.ctxSize ?? 0,
-      gpuLayers: cfg?.gpuLayers ?? "auto",
+      gpuLayers: cfg?.gpuLayers ?? null,
       temp: cfg?.temp ?? null,
       topP: cfg?.topP ?? null,
       topK: cfg?.topK ?? null,
-      reasoning: cfg?.reasoning ?? "auto",
+      thinking: cfg?.thinking ?? null,
+      reasoning: cfg?.reasoning ?? null,
     },
     server: {
       baseUrl: "",
       slotId: 0,
-      props: cfg?.enableProps ?? true,
-      metrics: cfg?.enableMetrics ?? true,
+      props: cfg?.enableProps ?? null,
+      metrics: cfg?.enableMetrics ?? null,
       processing: false,
     },
     context: {},
