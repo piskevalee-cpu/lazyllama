@@ -52,6 +52,7 @@ a `lazyllama` command that works from anywhere.
         <li><a href="#the-installer">The installer</a></li>
         <li><a href="#the-config-editor">The config editor</a></li>
         <li><a href="#the-manual">The manual</a></li>
+        <li><a href="#keybinds">Keybinds</a></li>
         <li><a href="#in-chat">In chat</a></li>
         <li><a href="#the-side-panel">The side panel</a></li>
         <li><a href="#thinking">Thinking</a></li>
@@ -247,7 +248,7 @@ an explicit `Enter` — never a silent edit of your dotfile.
 | `Tab` `Shift+Tab` | jump between groups and actions |
 | `Enter` | edit the focused field inline |
 | `s` | save the preset for this model |
-| `?` | open the manual |
+| `?`, `Ctrl+K` | the manual, the keybinds |
 | `Esc` | back to the model list |
 
 | Group | Fields |
@@ -289,8 +290,9 @@ and the live context meter still works.
 ### The manual
 
 Press `?` or `F1` on any screen and scroll with `↑` `↓`, `PgUp` `PgDn`, `Home`
-and `End`. `Esc` returns to exactly the screen and row you left, including from
-the middle of the config editor.
+and `End`. `Ctrl+K` opens the keybinds next to it, and the same key again closes
+whichever help screen is open. `Esc` returns to exactly the screen and row you
+left, including from the middle of the config editor.
 
 The manual documents every parameter LazyLlama can affect, in seven groups:
 context, GPU and memory, threads and batching, sampling, thinking, templates,
@@ -305,6 +307,31 @@ run in front of you. Parameters the editor does not expose (`--flash-attn`,
 `--cache-type-k`, `--load-mode`, `--numa`, `-sm`, `--swa-full`, `--context-shift`,
 `--mirostat`, `--min-p`, `--parallel`, `-cb`, `--api-key`, `--timeout`, …) are
 documented there too, and reach the server through **extra args**.
+
+### Keybinds
+
+`Ctrl+K` opens the keybinds next to the manual, from any screen. Every command
+the app owns is listed, grouped by where it applies — everywhere, in chat, the
+model picker and config editor, the launch config overlay, and the help screens
+themselves — with the key it is bound to right now.
+
+| Key | Action |
+| --- | --- |
+| `↑` `↓` | move through the list |
+| `Enter` | start recording: the next key press becomes the binding |
+| `Del` | restore the command's default |
+| `Esc` | back |
+
+Overrides are saved to `~/.config/lazyllama/keybinds.json` and are keyed by
+command, so a rebound key changes what the key *does* everywhere at once: the
+footer reference, the editor, the config overlay and the help screens all read
+the same registry. A key bound to two commands is reported rather than silently
+shadowing one of them. Two entries are listed as **fixed** — activating the
+focused row and the prompt's newline keys — because OpenTUI resolves those
+inside the widget that draws them.
+
+`Esc` and `Enter` cannot be rebound to nothing: there is no key to press to
+clear a binding, and `Del` is the way back to the default.
 
 ### Thinking
 
@@ -351,7 +378,9 @@ extra args.
 | `Ctrl+R` | toggle the transcript scrollbar |
 | `Ctrl+T` | show or hide model thinking |
 | `F2` | the launch config overlay |
+| `Ctrl+X` | back to the model picker, keeping the server and the conversation |
 | `?`, `F1` | the parameter manual |
+| `Ctrl+K` | the keybinds |
 | `Ctrl+Y` | copy the selection |
 | `Ctrl+C` | copy the selection, otherwise quit |
 
@@ -367,7 +396,10 @@ with `Ctrl+B`. It belongs to the chat only — the picker and the editor own the
 full width.
 
 * **Context** — window size, tokens used, and a gradient meter. The used count
-  comes from `/slots` and moves while the model is still generating.
+  comes from `/slots` and moves while the model is still generating. It is the
+  whole slot: cached prefix, prompt and answer together, which is why it is
+  larger than the `tok generated` count in an answer's footer — that one is only
+  what the answer itself produced.
 * **Model** — name, source, GPU layers, sampling, thinking mode. No context row
   here; that belongs to Context.
 * **Server** — URL, slot, context limit, tokens per second.
@@ -444,6 +476,8 @@ src/
     chatView.ts       the chat column: transcript, prompt, side panel
     hubView.ts        model picker and the data-driven config editor
     manualView.ts     the `?` screen that renders src/manual.ts
+    keybinds.ts       the command registry, overrides and key formatting
+    keybindsView.ts   the Ctrl+K screen, and the footer hints that follow it
     installView.ts    the wizard's screens
     transcript.ts prompt.ts sidebar.ts splashView.ts
     theme.ts meter.ts spinner.ts keys.ts bindings.ts layout.ts
@@ -476,6 +510,7 @@ which records the OpenTUI traps this project has already hit.
 - [x] OpenCode-style session view, prompt and side panel
 - [x] Launch parameters that are only sent when chosen
 - [x] In-app parameter manual, and configurable thinking effort
+- [x] Keybinds screen: rebind any command, and leave the chat for the menu
 - [x] Two-step Esc that interrupts generation
 - [x] Live context meter and model thinking
 - [ ] Persist and resume conversations
