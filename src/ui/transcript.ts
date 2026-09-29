@@ -52,10 +52,13 @@ export function formatAssistantFooter(text: string, detail?: AssistantResult): s
     return detail?.finishReason !== undefined ? `(no response — ${detail.finishReason})` : "(no response)";
   }
   const parts: string[] = [];
+  // "generated" is not decoration: the side panel's context meter counts the
+  // whole slot (prompt plus answer), so a bare "tok" invites the question of
+  // why the two numbers differ.
   if (detail?.tokens !== undefined && detail.tokPerSecond !== undefined) {
-    parts.push(`▣ ${detail.tokens} tok · ${detail.tokPerSecond.toFixed(1)} tok/s`);
+    parts.push(`▣ ${detail.tokens} tok generated · ${detail.tokPerSecond.toFixed(1)} tok/s`);
   } else if (detail?.tokens !== undefined) {
-    parts.push(`▣ ${detail.tokens} tok`);
+    parts.push(`▣ ${detail.tokens} tok generated`);
   } else if (detail?.tokPerSecond !== undefined) {
     parts.push(`▣ ${detail.tokPerSecond.toFixed(1)} tok/s`);
   }
