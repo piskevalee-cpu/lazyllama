@@ -21,20 +21,17 @@ import { sessionBindings, type SessionCommandContext } from "./bindings.js";
 import { ChatScreen, emptySidebarData } from "./chatView.js";
 import { loadFlags, saveFlags } from "./flags.js";
 import { HubView, selectEditorDensity } from "./hubView.js";
+import { Keymap, type KeymapContext } from "./keys.js";
 import {
-  canonicalKeyName,
-  isDownKey,
-  isEscapeKey,
-  isLeftKey,
-  isQuitKey,
-  isRightKey,
-  isTabBackward,
-  isTabForward,
-  isUpKey,
-  Keymap,
-  matchesKeySpec,
-  type KeymapContext,
-} from "./keys.js";
+  keysFor,
+  loadKeybinds,
+  pressedCommand,
+  prettySpec,
+  saveKeybinds,
+  type KeybindOverrides,
+} from "./keybinds.js";
+import { KeybindsView } from "./keybindsView.js";
+import type { ScrollCommand } from "./layout.js";
 import { meterTokens } from "./meter.js";
 import { ManualView, type ManualScrollCommand } from "./manualView.js";
 import { destroyRenderer } from "./opentui.js";
@@ -52,55 +49,130 @@ import type {
   UiHandles,
 } from "./types.js";
 
-// Footer hints are per screen and must match what the screen actually handles.
-// Chat leaves the footer empty (it is hidden there and the prompt owns its own
-// footer row, with the config overlay printing its own key line).
-const HINTS: Record<Screen, string> = {
-  splash: "press any key",
-  models: "↑/↓ select · ←/→ move · Enter open · r refresh · ? manual",
-  edit: "↑/↓ move · ←/→ adjust · Tab groups · Enter edit · s save · ? manual · Esc back · Ctrl+C quit",
-  manual: "↑/↓ scroll · PgUp/PgDn page · ? where this comes from · Esc back · Ctrl+C quit",
-  chat: "",
+// Footer hints are generated from the registry, so they can never claim a key
+// the screen does not handle, and a rebind is reflected immediately. Each entry
+// names the command ids whose keys are shown and the label printed after them;
+// a pair of arrows is two ids, so both keys appear.
+interface ScreenHint {
+  ids: string[];
+  label: string;
+}
+
+const SCREEN_HINTS: Record<Screen, { full: ScreenHint[]; compact: ScreenHint[] }> = {
+  splash: { full: [], compact: [] },
+  models: {
+    full: [
+      { ids: ["hub.models.move-up", "hub.models.move-down"], label: "select" },
+      { ids: ["hub.models.open"], label: "open" },
+      { ids: ["hub.models.refresh"], label: "refresh" },
+      { ids: ["help.manual"], label: "manual" },
+    ],
+    compact: [
+      { ids: ["hub.models.move-up", "hub.models.move-down"], label: "select" },
+      { ids: ["hub.models.open"], label: "open" },
+      { ids: ["hub.models.refresh"], label: "refresh" },
+    ],
+  },
+  edit: {
+    full: [
+      { ids: ["hub.edit.move-up", "hub.edit.move-down"], label: "move" },
+      { ids: ["hub.edit.adjust-left", "hub.edit.adjust-right"], label: "adjust" },
+      { ids: ["hub.edit.next-group"], label: "groups" },
+      { ids: ["hub.edit.open"], label: "edit" },
+      { ids: ["hub.edit.save"], label: "save" },
+      { ids: ["help.manual"], label: "manual" },
+      { ids: ["hub.edit.back"], label: "back" },
+      { ids: ["app.quit"], label: "quit" },
+    ],
+    compact: [
+      { ids: ["hub.edit.move-up", "hub.edit.move-down"], label: "move" },
+      { ids: ["hub.edit.adjust-left", "hub.edit.adjust-right"], label: "adjust" },
+      { ids: ["hub.edit.open"], label: "edit" },
+      { ids: ["hub.edit.save"], label: "save" },
+      { ids: ["hub.edit.back"], label: "back" },
+    ],
+  },
+  manual: {
+    full: [
+      { ids: ["help.scroll.line-up", "help.scroll.line-down"], label: "scroll" },
+      { ids: ["session.scroll.page-up", "session.scroll.page-down"], label: "page" },
+      { ids: ["help.manual"], label: "manual" },
+      { ids: ["help.keybinds"], label: "keybinds" },
+      { ids: ["manual.close"], label: "back" },
+      { ids: ["app.quit"], label: "quit" },
+    ],
+    compact: [
+      { ids: ["help.scroll.line-up", "help.scroll.line-down"], label: "scroll" },
+      { ids: ["manual.close"], label: "back" },
+    ],
+  },
+  keybinds: {
+    full: [
+      { ids: ["help.scroll.line-up", "help.scroll.line-down"], label: "move" },
+      { ids: ["keybinds.rebind"], label: "rebind" },
+      { ids: ["keybinds.reset"], label: "default" },
+      { ids: ["help.manual"], label: "manual" },
+      { ids: ["keybinds.close"], label: "back" },
+      { ids: ["app.quit"], label: "quit" },
+    ],
+    compact: [
+      { ids: ["help.scroll.line-up", "help.scroll.line-down"], label: "move" },
+      { ids: ["keybinds.rebind"], label: "rebind" },
+      { ids: ["keybinds.close"], label: "back" },
+    ],
+  },
+  chat: { full: [], compact: [] },
 };
 
-// The footer pairs the reference with the model/status meta, so narrow
-// terminals get a shorter reference instead of an overlapping row.
-const COMPACT_HINTS: Partial<Record<Screen, string>> = {
-  models: "↑/↓ select · Enter open · r refresh",
-  edit: "↑/↓ move · ←/→ adjust · Enter edit · s save · Esc back",
-  manual: "↑/↓ scroll · Esc back",
-};
+// Hints print one key per command, the primary one, with the ids of a pair
+// joined by a slash: "←/→ adjust". A rebind replaces that key, so the reference
+// follows the user's choices instead of drifting from them.
+function hintKeys(overrides: KeybindOverrides, ids: string[]): string {
+  return ids
+    .map((id) => keysFor(overrides, id)[0] ?? "")
+    .filter((key) => key.length > 0)
+    .map(prettySpec)
+    .join("/");
+}
+
+function screenHint(overrides: KeybindOverrides, screen: Screen, compact: boolean): string {
+  return SCREEN_HINTS[screen][compact ? "compact" : "full"]
+    .map((hint) => `${hintKeys(overrides, hint.ids)} ${hint.label}`.trim())
+    .join(" · ");
+}
 
 const FOOTER_SIDE_PADDING = 4;
 const FOOTER_GAP = 2;
 
 // Pick the longest reference that still leaves room for the meta text, so the
 // two footer slots never overlap or clip.
-export function hintsFor(width: number, screen: Screen, meta: string): string {
+export function hintsFor(
+  width: number,
+  screen: Screen,
+  meta: string,
+  overrides: KeybindOverrides = {},
+): string {
   const available = width - FOOTER_SIDE_PADDING - FOOTER_GAP - meta.length;
-  if (HINTS[screen].length <= available) return HINTS[screen];
-  const compact = COMPACT_HINTS[screen];
-  if (compact !== undefined && compact.length <= available) return compact;
+  const full = screenHint(overrides, screen, false);
+  if (full.length <= available) return full;
+  const compact = screenHint(overrides, screen, true);
+  if (compact.length <= available) return compact;
   return "";
 }
 
-// The manual is driven by the controller rather than by the focused scroller,
-// because the controller's key listener runs first and would otherwise swallow
-// these keys before the renderable ever saw them. The specs mirror the chat
-// scroll bindings, so both scrollables feel the same.
-const MANUAL_SCROLL_KEYS: Array<[string, ManualScrollCommand]> = [
-  ["up", "line-up"],
-  ["down", "line-down"],
-  ["pageup", "page-up"],
-  ["pagedown", "page-down"],
-  ["ctrl+alt+u", "half-page-up"],
-  ["ctrl+alt+d", "half-page-down"],
-  ["ctrl+alt+y", "line-up"],
-  ["ctrl+alt+e", "line-down"],
-  ["home", "top"],
-  ["ctrl+g", "top"],
-  ["end", "bottom"],
-  ["ctrl+alt+g", "bottom"],
+// The help screens are driven by the controller rather than by the focused
+// scroller, because the controller's keypress listener runs first and would
+// otherwise swallow these keys before the renderable ever saw them. The page and
+// jump commands are the chat's own ids, so one rebinding scrolls both.
+const HELP_SCROLL_IDS: Array<[string, ManualScrollCommand]> = [
+  ["help.scroll.line-up", "line-up"],
+  ["help.scroll.line-down", "line-down"],
+  ["session.scroll.page-up", "page-up"],
+  ["session.scroll.page-down", "page-down"],
+  ["session.scroll.half-page-up", "half-page-up"],
+  ["session.scroll.half-page-down", "half-page-down"],
+  ["session.scroll.top", "top"],
+  ["session.scroll.bottom", "bottom"],
 ];
 
 const INTERRUPT_WINDOW_MS = 5000;
@@ -119,6 +191,8 @@ export function createAppUi(
     savePreset: saveStoredPreset,
   };
   const flags = loadFlags();
+  // User keybinds, loaded once and re-resolved whenever the user rebinds one.
+  let keybinds: KeybindOverrides = loadKeybinds();
 
   let cfg: LaunchConfig = deps.config;
   let localModels = deps.localModels;
@@ -129,8 +203,10 @@ export function createAppUi(
   let configOpen = false;
   // The manual is an overlay on top of whatever screen opened it, so Esc
   // returns to the exact row the user left, not just to the top of a screen.
-  let manualReturn: Screen = "models";
-  let manualFocusId: string | null = null;
+  // A help screen is an overlay on top of whatever screen opened it, so Esc
+  // returns to the exact row the user left, not just to the top of a screen.
+  let helpReturn: Screen = "models";
+  let helpFocusId: string | null = null;
   // Tracked as a plain string: TextRenderable.content reads back as StyledText.
   let metaLine = "";
   let hubStatusText = "";
@@ -156,6 +232,17 @@ export function createAppUi(
     onConfirm: () => confirmHub(),
   }, theme);
   const manual = new ManualView(renderer, theme);
+  const keybindsView = new KeybindsView(renderer, theme, {
+    onChange: (next) => {
+      keybinds = next;
+      saveKeybinds(next);
+      // The keymap, the key handling and the hints all read the same
+      // overrides, so one rebind reaches every one of them.
+      rebuildKeymap();
+      keybindsView.setOverrides(next);
+      syncFooterHints();
+    },
+  });
   const chat = new ChatScreen(
     renderer,
     theme,
@@ -170,6 +257,7 @@ export function createAppUi(
   shell.body.add(chat.column);
   shell.body.add(chat.sidebarBody());
   shell.body.add(manual.body);
+  shell.body.add(keybindsView.body);
 
   const keymap = new Keymap();
   const commandContext: SessionCommandContext = {
@@ -181,38 +269,58 @@ export function createAppUi(
       return selectionText(renderer).length > 0;
     },
   };
-  keymap.register(
-    sessionBindings(commandContext, {
-      submit: () => submitChatMessage(),
-      interrupt: () => handleInterrupt(),
-      toggleSidebar: () => toggleSidebar(),
-      toggleScrollbar: () => toggleScrollbar(),
-      toggleThinking: () => toggleThinking(),
-      toggleConfig: () => setConfigOpen(!configOpen),
-      toggleSidebarCursor: () => chat.toggleSidebarCursor(),
-      moveSidebarCursor: (delta) => {
-        chat.setSidebarCursor(true);
-        chat.moveSidebarCursor(delta);
+  // The chat keymap is built from the registry, so a rebind reaches it without
+  // anything else knowing about the user's choices. `rebuildKeymap` is also how
+  // a rebind lands: the bindings are regenerated, not patched in place.
+  function rebuildKeymap(): void {
+    keymap.clear();
+    keymap.register(
+      sessionBindings(
+        commandContext,
+        {
+          submit: () => submitChatMessage(),
+          exit: () => exitToMenu(),
+          interrupt: () => handleInterrupt(),
+          toggleSidebar: () => toggleSidebar(),
+          toggleScrollbar: () => toggleScrollbar(),
+          toggleThinking: () => toggleThinking(),
+          toggleConfig: () => setConfigOpen(!configOpen),
+          toggleSidebarCursor: () => chat.toggleSidebarCursor(),
+          moveSidebarCursor: (delta) => {
+            chat.setSidebarCursor(true);
+            chat.moveSidebarCursor(delta);
+          },
+          activateSidebarCursor: () => chat.activateSidebarCursor(),
+          clearPrompt: () => chat.clearInput(),
+          scroll: (command) => scrollActive(command),
+          scrollTop: () => scrollActive("top"),
+          scrollBottom: () => scrollActive("bottom"),
+          quit: () => deps.onQuit?.(),
+          closeModal: () => setConfigOpen(false),
+          clearSelection: () => renderer.clearSelection(),
+        },
+        keybinds,
+      ),
+    );
+    keymap.register([
+      {
+        id: "selection.copy",
+        keys: keysFor(keybinds, "selection.copy"),
+        description: "copy",
+        when: () => commandContext.selectionActive,
+        run: () => copySelection(renderer),
       },
-      activateSidebarCursor: () => chat.activateSidebarCursor(),
-      clearPrompt: () => chat.clearInput(),
-      scroll: (command) => chat.scroll(command),
-      scrollTop: () => chat.scrollTop(),
-      scrollBottom: () => chat.scrollBottom(),
-      quit: () => deps.onQuit?.(),
-      closeModal: () => setConfigOpen(false),
-      clearSelection: () => renderer.clearSelection(),
-    }),
-  );
-  keymap.register([
-    {
-      id: "selection.copy",
-      keys: ["ctrl+c"],
-      description: "copy",
-      when: () => commandContext.selectionActive,
-      run: () => copySelection(renderer),
-    },
-  ]);
+    ]);
+  }
+
+  // One scroll target: whichever scrollable the user is looking at.
+  function scrollActive(command: ScrollCommand | "top" | "bottom"): void {
+    if (screen === "manual") manual.scroll(command);
+    else if (screen === "keybinds") keybindsView.scroll(command);
+    else if (command === "top") chat.scrollTop();
+    else if (command === "bottom") chat.scrollBottom();
+    else chat.scroll(command);
+  }
 
   function selectionText(target: CliRenderer): string {
     return target.getSelection()?.getSelectedText() ?? "";
@@ -334,6 +442,12 @@ export function createAppUi(
     shell.metaText.content = metaLine;
   }
 
+  function syncFooterHints(): void {
+    // Resolved after the meta text, so the reference is shortened to whatever
+    // space is actually left.
+    shell.hints.content = hintsFor(renderer.terminalWidth, screen, metaLine, keybinds);
+  }
+
   // The prompt's left footer slot is the model's name, always visible.
   function syncPromptHint(): void {
     chat.setPromptHint(modelDisplayName(cfg.model));
@@ -363,6 +477,8 @@ export function createAppUi(
     const manualVisible = screen === "manual";
     if (manualVisible) manual.setConfig(cfg);
     manual.setVisible(manualVisible);
+    if (screen === "keybinds") keybindsView.setOverrides(keybinds);
+    keybindsView.setVisible(screen === "keybinds");
     if (chatVisible) {
       if (configOpen) {
         chat.showConfig(cfg);
@@ -377,7 +493,7 @@ export function createAppUi(
     // shortened to whatever space is actually left.
     renderMeta();
     syncPromptHint();
-    shell.hints.content = hintsFor(renderer.terminalWidth, screen, metaLine);
+    syncFooterHints();
     if (screen === "edit") applyEditorDensity();
     syncSidebarModel();
     syncCommandContext();
@@ -425,28 +541,86 @@ export function createAppUi(
     enterModels(0);
   }
 
-  // The manual is reachable from every screen and always returns to it.
-  function toggleManual(): void {
-    if (screen === "manual") {
-      exitManual();
-      return;
-    }
-    manualReturn = screen;
-    manualFocusId = renderer.currentFocusedRenderable?.id ?? null;
-    screen = "manual";
+  // Leaving the chat is not a quit: the managed server keeps running and the
+  // transcript keeps the conversation, so coming back is instant. A turn that is
+  // still generating is left to finish and lands in the transcript.
+  function exitToMenu(): void {
+    if (screen !== "chat") return;
+    configOpen = false;
+    screen = "models";
+    hubStatusText = "";
+    hub.showModels(buildModelEntries(localModels), 0);
     applyLayout();
   }
 
-  function exitManual(): void {
-    const back = manualReturn === "manual" ? "models" : manualReturn;
+  // A help screen is reachable from every screen and always returns to it,
+  // including the exact row the user left. Either help key swaps between the two
+  // screens without changing where they return to.
+  function openHelp(target: "manual" | "keybinds"): void {
+    if (screen === target) {
+      // The same key again closes the screen, so it is a toggle.
+      exitHelp();
+      return;
+    }
+    if (screen === "manual" || screen === "keybinds") {
+      // The other help key swaps screens without changing where they return to.
+      screen = target;
+      applyLayout();
+      return;
+    }
+    helpReturn = screen;
+    helpFocusId = renderer.currentFocusedRenderable?.id ?? null;
+    screen = target;
+    applyLayout();
+  }
+
+  function exitHelp(): void {
+    const back = helpReturn === "manual" || helpReturn === "keybinds" ? "models" : helpReturn;
     screen = back;
     if (back === "edit") {
-      if (manualFocusId !== null) hub.focusById(manualFocusId);
+      if (helpFocusId !== null) hub.focusById(helpFocusId);
       else hub.refreshEditor(cfg);
     } else if (back === "models") {
       hub.refreshModels(buildModelEntries(localModels));
+    } else if (back === "chat") {
+      chat.focusPrompt();
     }
     applyLayout();
+  }
+
+  // One handler for both help screens. Every key is claimed here, so a stray
+  // Enter can never reach the chat keymap behind them, and a key press that is
+  // being recorded is never mistaken for a command.
+  function handleHelpKey(key: KeyEvent): void {
+    if (keybindsView.isRecording()) {
+      keybindsView.record(key);
+      return;
+    }
+    const closeId = screen === "keybinds" ? "keybinds.close" : "manual.close";
+    if (pressedCommand(keybinds, closeId, key)) {
+      exitHelp();
+      return;
+    }
+    if (screen === "keybinds") {
+      if (pressedCommand(keybinds, "help.scroll.line-up", key)) {
+        keybindsView.moveCursor(-1);
+        return;
+      }
+      if (pressedCommand(keybinds, "help.scroll.line-down", key)) {
+        keybindsView.moveCursor(1);
+        return;
+      }
+      if (pressedCommand(keybinds, "keybinds.rebind", key)) {
+        keybindsView.beginRecord();
+        return;
+      }
+      if (pressedCommand(keybinds, "keybinds.reset", key)) {
+        keybindsView.resetSelected();
+      }
+      return;
+    }
+    const scroll = HELP_SCROLL_IDS.find(([id]) => pressedCommand(keybinds, id, key));
+    if (scroll) manual.scroll(scroll[1]);
   }
 
   function backToModels(): void {
@@ -637,39 +811,37 @@ export function createAppUi(
   // ---- input ------------------------------------------------------------
 
   function handleKeyPress(key: KeyEvent): void {
-    if (isQuitKey(key) && screen !== "chat") {
+    if (pressedCommand(keybinds, "app.quit", key) && screen !== "chat") {
       deps.onQuit?.();
       key.stopPropagation();
       return;
     }
-    const name = canonicalKeyName(key.name);
     if (screen === "splash") {
       enterHubFromSplash();
       key.stopPropagation();
       return;
     }
     if (hub.isEditing()) {
-      if (isEscapeKey(key)) {
+      if (pressedCommand(keybinds, "hub.edit.cancel", key)) {
         cancelInlineEdit();
         key.stopPropagation();
       }
       return;
     }
-    // `?` is only claimed once no text input is open, so it still types
-    // normally inside the inline editor.
-    if (name === "?" || key.name === "f1") {
-      toggleManual();
+    // Help screens are reachable from everywhere, but only once no text input
+    // is open, so `?` still types normally inside the inline editor.
+    if (pressedCommand(keybinds, "help.manual", key)) {
+      openHelp("manual");
       key.stopPropagation();
       return;
     }
-    if (screen === "manual") {
-      // Scrolling is handled here, and everything else stops too, so a stray
-      // Enter cannot reach the chat keymap behind the screen.
-      if (isEscapeKey(key)) exitManual();
-      else {
-        const scroll = MANUAL_SCROLL_KEYS.find(([spec]) => matchesKeySpec(key, spec));
-        if (scroll) manual.scroll(scroll[1]);
-      }
+    if (pressedCommand(keybinds, "help.keybinds", key)) {
+      openHelp("keybinds");
+      key.stopPropagation();
+      return;
+    }
+    if (screen === "manual" || screen === "keybinds") {
+      handleHelpKey(key);
       key.stopPropagation();
       key.preventDefault();
       return;
@@ -677,13 +849,13 @@ export function createAppUi(
     if (screen === "models") {
       // Up/down belong to the focused model Select; left/right mirror them so
       // every footer-advertised arrow works.
-      if (key.name === "left") {
+      if (pressedCommand(keybinds, "hub.models.move-left", key)) {
         hub.moveModelSelection(-1);
         key.stopPropagation();
-      } else if (key.name === "right") {
+      } else if (pressedCommand(keybinds, "hub.models.move-right", key)) {
         hub.moveModelSelection(1);
         key.stopPropagation();
-      } else if (name === "r") {
+      } else if (pressedCommand(keybinds, "hub.models.refresh", key)) {
         localModels = deps.onRefreshModels();
         hub.refreshModels(buildModelEntries(localModels));
         applyLayout();
@@ -692,12 +864,12 @@ export function createAppUi(
       return;
     }
     if (screen === "edit") {
-      handleEditorKey(key, name);
+      handleEditorKey(key);
       return;
     }
     // The config modal owns its own single-letter adjustments before the
     // shared keymap sees them.
-    if (configOpen && handleConfigKey(key, name)) {
+    if (configOpen && handleConfigKey(key)) {
       key.stopPropagation();
       key.preventDefault();
       return;
@@ -711,24 +883,25 @@ export function createAppUi(
     }
   }
 
-  function handleEditorKey(key: KeyEvent, name: string): void {
-    // Plain arrows walk the whole vertical editor; shift+arrows stay with
-    // the focused Select for native fast scrolling. Return belongs to the
-    // focused editor control or action button.
-    if (isTabForward(key)) {
+  function handleEditorKey(key: KeyEvent): void {
+    // Every key comes from the registry, so a rebind reaches the editor like
+    // the chat keymap. Shift+arrow stays with the focused Select for its native
+    // fast scroll.
+    const fastScroll = key.shift === true && (key.name === "up" || key.name === "down");
+    if (pressedCommand(keybinds, "hub.edit.next-group", key)) {
       hub.focusNextEditorControl();
       key.stopPropagation();
-    } else if (isTabBackward(key)) {
+    } else if (pressedCommand(keybinds, "hub.edit.prev-group", key)) {
       hub.focusPreviousEditorControl();
       key.stopPropagation();
-    } else if (isUpKey(key) && !key.shift) {
+    } else if (!fastScroll && pressedCommand(keybinds, "hub.edit.move-up", key)) {
       hub.moveEditorSelection(-1);
       key.stopPropagation();
-    } else if (isDownKey(key) && !key.shift) {
+    } else if (!fastScroll && pressedCommand(keybinds, "hub.edit.move-down", key)) {
       hub.moveEditorSelection(1);
       key.stopPropagation();
-    } else if (key.name === "left") {
-      // Lateral arrows are context-sensitive: adjust the focused value, or
+    } else if (pressedCommand(keybinds, "hub.edit.adjust-left", key)) {
+      // Lateral movement is context-sensitive: adjust the focused value, or
       // move between Back/Save/Confirm when an action button has focus.
       if (!hub.focusAdjacentAction(-1)) {
         nudgeSelectedField(-1);
@@ -736,47 +909,37 @@ export function createAppUi(
       }
       key.stopPropagation();
       key.preventDefault();
-    } else if (key.name === "right") {
+    } else if (pressedCommand(keybinds, "hub.edit.adjust-right", key)) {
       if (!hub.focusAdjacentAction(1)) {
         nudgeSelectedField(1);
         applyLayout();
       }
       key.stopPropagation();
       key.preventDefault();
-    } else if (isLeftKey(key)) {
-      nudgeSelectedField(-1);
-      applyLayout();
-      key.stopPropagation();
-      key.preventDefault();
-    } else if (isRightKey(key)) {
-      nudgeSelectedField(1);
-      applyLayout();
-      key.stopPropagation();
-      key.preventDefault();
-    } else if (isEscapeKey(key)) {
+    } else if (pressedCommand(keybinds, "hub.edit.back", key)) {
       backToModels();
       key.stopPropagation();
-    } else if (name === "s") {
+    } else if (pressedCommand(keybinds, "hub.edit.save", key)) {
       savePresetForCurrentModel();
       applyLayout();
       key.stopPropagation();
     }
   }
 
-  function handleConfigKey(key: KeyEvent, name: string): boolean {
-    if (name === "left" || name === "-" || name === "_") {
+  function handleConfigKey(key: KeyEvent): boolean {
+    if (pressedCommand(keybinds, "overlay.adjust-left", key)) {
       bumpContextSize(-1024);
-    } else if (name === "right" || name === "+" || name === "=") {
+    } else if (pressedCommand(keybinds, "overlay.adjust-right", key)) {
       bumpContextSize(1024);
-    } else if (name === "g") {
+    } else if (pressedCommand(keybinds, "overlay.gpu", key)) {
       cycleConfigField("gpuLayers");
-    } else if (name === "j") {
+    } else if (pressedCommand(keybinds, "overlay.jinja", key)) {
       cycleConfigField("jinja");
-    } else if (name === "p") {
+    } else if (pressedCommand(keybinds, "overlay.props", key)) {
       cycleConfigField("enableProps");
-    } else if (name === "m") {
+    } else if (pressedCommand(keybinds, "overlay.metrics", key)) {
       cycleConfigField("enableMetrics");
-    } else if (name === "s") {
+    } else if (pressedCommand(keybinds, "overlay.save", key)) {
       deps.onConfigChange({ ...cfg });
       chat.showConfig(cfg);
     } else {
@@ -800,6 +963,8 @@ export function createAppUi(
     chat.applyLayout(width, height);
     if (screen === "edit") applyEditorDensity();
   }
+
+  rebuildKeymap();
 
   // Copy-on-release, OpenCode style: any mouse selection in the transcript is
   // copied to the system clipboard and cleared, so the next drag starts fresh.

@@ -3,6 +3,7 @@
 // instead of hand-written strings that drift from the actual handling.
 
 import type { KeyEvent } from "@opentui/core";
+import { keysFor, type KeybindOverrides } from "./keybinds.js";
 import type { ScrollCommand } from "./layout.js";
 import type { Binding } from "./keys.js";
 
@@ -21,6 +22,8 @@ export interface SessionCommandContext {
 
 export interface SessionCommands {
   submit(): void;
+  /** Leave the chat and go back to the model picker. */
+  exit(): void;
   interrupt(): void;
   toggleSidebar(): void;
   toggleScrollbar(): void;
@@ -38,25 +41,27 @@ export interface SessionCommands {
   clearSelection(): void;
 }
 
-const SCROLL_KEYS: Record<ScrollCommand, string[]> = {
-  // OpenCode's "page" is half the viewport, "half page" a quarter of it.
-  "page-up": ["pageup", "ctrl+alt+b"],
-  "page-down": ["pagedown", "ctrl+alt+f"],
-  "half-page-up": ["ctrl+alt+u"],
-  "half-page-down": ["ctrl+alt+d"],
-  "line-up": ["ctrl+alt+y"],
-  "line-down": ["ctrl+alt+e"],
+// The chat's scroll commands are ids, not key lists: the keys live in the
+// registry, so a rebind reaches the keymap and the manual's scroller at once.
+const SCROLL_IDS: Record<ScrollCommand, string> = {
+  "page-up": "session.scroll.page-up",
+  "page-down": "session.scroll.page-down",
+  "half-page-up": "session.scroll.half-page-up",
+  "half-page-down": "session.scroll.half-page-down",
+  "line-up": "session.scroll.line-up",
+  "line-down": "session.scroll.line-down",
 };
 
 export function scrollBinding(
   command: ScrollCommand,
   label: string,
   run: () => void,
+  keys: (id: string) => string[],
   scope: Binding["scope"] = "global",
 ): Binding {
   return {
     id: `session.scroll.${command}`,
-    keys: SCROLL_KEYS[command],
+    keys: keys(SCROLL_IDS[command]),
     description: label,
     scope,
     run: () => run(),
@@ -67,18 +72,22 @@ export function scrollBinding(
 export function sessionBindings(
   ctx: SessionCommandContext,
   commands: SessionCommands,
+  overrides: KeybindOverrides = {},
 ): Binding[] {
+  // Every binding reads its keys from the registry, so a rebind reaches the
+  // keymap without this file knowing anything about the user's choices.
+  const keys = (id: string): string[] => keysFor(overrides, id);
   return [
     {
       id: "app.quit",
-      keys: ["ctrl+c"],
+      keys: keys("app.quit"),
       description: "quit",
       when: () => !ctx.selectionActive,
       run: () => commands.quit(),
     },
     {
       id: "prompt.submit",
-      keys: ["return", "kpenter", "linefeed"],
+      keys: keys("prompt.submit"),
       description: "send",
       scope: "editor",
       when: () => !ctx.modalOpen,
@@ -92,97 +101,105 @@ export function sessionBindings(
       // The one Escape chain, most specific first: modal, then selection,
       // then the two-step interrupt, then clearing a dirty prompt.
       id: "modal.close",
-      keys: ["escape", "q"],
+      keys: keys("modal.close"),
       description: "close",
       when: () => ctx.modalOpen,
       run: () => commands.closeModal(),
     },
     {
       id: "selection.clear",
-      keys: ["escape"],
+      keys: keys("selection.clear"),
       description: "clear selection",
       when: () => !ctx.modalOpen && ctx.selectionActive,
       run: () => commands.clearSelection(),
     },
     {
       id: "session.interrupt",
-      keys: ["escape"],
+      keys: keys("session.interrupt"),
       description: "interrupt",
       when: () => !ctx.modalOpen && !ctx.selectionActive && ctx.busy,
       run: () => commands.interrupt(),
     },
     {
       id: "prompt.clear",
-      keys: ["escape"],
+      keys: keys("prompt.clear"),
       description: "clear prompt",
       when: () => !ctx.modalOpen && !ctx.selectionActive && !ctx.busy && ctx.promptDirty,
       run: () => commands.clearPrompt(),
     },
-    scrollBinding("page-up", "PgUp scroll", () => commands.scroll("page-up")),
-    scrollBinding("page-down", "PgDn scroll", () => commands.scroll("page-down")),
-    scrollBinding("half-page-up", "half page up", () => commands.scroll("half-page-up")),
-    scrollBinding("half-page-down", "half page down", () => commands.scroll("half-page-down")),
-    scrollBinding("line-up", "line up", () => commands.scroll("line-up")),
-    scrollBinding("line-down", "line down", () => commands.scroll("line-down")),
+    {
+      // Leaving the chat is not a quit: the server keeps running and the
+      // conversation stays on the transcript when you come back.
+      id: "session.exit",
+      keys: keys("session.exit"),
+      description: "back to the menu",
+      run: () => commands.exit(),
+    },
+    scrollBinding("page-up", "PgUp scroll", () => commands.scroll("page-up"), keys),
+    scrollBinding("page-down", "PgDn scroll", () => commands.scroll("page-down"), keys),
+    scrollBinding("half-page-up", "half page up", () => commands.scroll("half-page-up"), keys),
+    scrollBinding("half-page-down", "half page down", () => commands.scroll("half-page-down"), keys),
+    scrollBinding("line-up", "line up", () => commands.scroll("line-up"), keys),
+    scrollBinding("line-down", "line down", () => commands.scroll("line-down"), keys),
     {
       id: "session.scroll.top",
-      keys: ["ctrl+g", "home"],
+      keys: keys("session.scroll.top"),
       description: "scroll to top",
       scope: "unfocused",
       run: () => commands.scrollTop(),
     },
     {
       id: "session.scroll.bottom",
-      keys: ["ctrl+alt+g", "end"],
+      keys: keys("session.scroll.bottom"),
       description: "scroll to bottom",
       scope: "unfocused",
       run: () => commands.scrollBottom(),
     },
     {
       id: "session.sidebar.toggle",
-      keys: ["ctrl+b"],
+      keys: keys("session.sidebar.toggle"),
       description: "toggle panel",
       run: () => commands.toggleSidebar(),
     },
     {
       id: "session.sidebar.cursor",
-      keys: ["alt+b"],
+      keys: keys("session.sidebar.cursor"),
       description: "panel sections",
       run: () => commands.toggleSidebarCursor(),
     },
     {
       id: "session.toggle.scrollbar",
-      keys: ["ctrl+r"],
+      keys: keys("session.toggle.scrollbar"),
       description: "toggle scrollbar",
       run: () => commands.toggleScrollbar(),
     },
     {
       id: "session.toggle.thinking",
-      keys: ["ctrl+t"],
+      keys: keys("session.toggle.thinking"),
       description: "toggle thinking",
       run: () => commands.toggleThinking(),
     },
     {
       id: "config.toggle",
-      keys: ["f2"],
+      keys: keys("config.toggle"),
       description: "config",
       run: () => commands.toggleConfig(),
     },
     {
       id: "prompt.sidebar.prev",
-      keys: ["alt+up"],
+      keys: keys("session.sidebar.prev"),
       description: "panel section up",
       run: () => commands.moveSidebarCursor(-1),
     },
     {
       id: "prompt.sidebar.next",
-      keys: ["alt+down"],
+      keys: keys("session.sidebar.next"),
       description: "panel section down",
       run: () => commands.moveSidebarCursor(1),
     },
     {
       id: "prompt.sidebar.activate",
-      keys: ["alt+return"],
+      keys: keys("session.sidebar.fold"),
       description: "fold section",
       run: () => commands.activateSidebarCursor(),
     },

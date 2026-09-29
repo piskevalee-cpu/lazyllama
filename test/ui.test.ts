@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTestRenderer } from "@opentui/core/testing";
@@ -27,6 +27,7 @@ import { formatContextRows, formatModelRows, formatSidebarContext, formatSystemR
 import { DARK_THEME } from "../src/ui/theme.ts";
 import { requiredEditorRows, selectEditorDensity } from "../src/ui/hubView.ts";
 import { isEnterKey } from "../src/ui/keys.ts";
+import { KEYBIND_DEFS } from "../src/ui/keybinds.ts";
 import type { ChatView, UiDeps, UiHandles } from "../src/ui/types.ts";
 
 const demoModel: LocalModel = {
@@ -186,12 +187,12 @@ describe("OpenTUI Enter handling", () => {
 
   test("the footer marks interrupted turns, even with no visible answer", () => {
     expect(formatAssistantFooter("partial", { interrupted: true, tokens: 4, tokPerSecond: 12 })).toBe(
-      "▣ 4 tok · 12.0 tok/s · interrupted",
+      "▣ 4 tok generated · 12.0 tok/s · interrupted",
     );
     expect(formatAssistantFooter("", { interrupted: true })).toBe("interrupted");
     expect(formatAssistantFooter("", { finishReason: "length" })).toBe("(no response — length)");
     expect(formatAssistantFooter("done", { thoughtMs: 2400, tokens: 9, tokPerSecond: 30 })).toBe(
-      "▣ 9 tok · 30.0 tok/s · thought 2.4s",
+      "▣ 9 tok generated · 30.0 tok/s · thought 2.4s",
     );
   });
 
@@ -1132,6 +1133,208 @@ describe("thinking and thought never coexist", () => {
       expect(footer).toBeDefined();
       expect(footer).toContain("demo");
       expect(footer).not.toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
+    } finally {
+      app.ui.destroy();
+    }
+  });
+});
+
+describe("leaving the chat for the menu", () => {
+  test("ctrl+x returns to the model picker without quitting the app", async () => {
+    const app = await createTestUi();
+    try {
+      await enterChat(app);
+      await pressAndSettle(app, () => app.mockInput.pressKey("x", { ctrl: true }));
+      const menu = await app.waitForFrame((frame) => frame.includes("Select a model"));
+      expect(menu).toContain("demo.gguf");
+      // Still the app, and the server is untouched: no quit was requested.
+      expect(app.quit.count).toBe(0);
+      expect(menu).not.toContain("Ask anything");
+      // Re-entering the chat finds the conversation still on the transcript.
+      await pressAndSettle(app, () => app.mockInput.pressEnter());
+      await app.waitForFrame((frame) => frame.includes("Configure —"));
+      for (let i = 0; i < 22; i += 1) app.mockInput.pressArrow("down");
+      await app.flush();
+      await pressAndSettle(app, () => app.mockInput.pressEnter());
+      const back = await app.waitForFrame((frame) => !frame.includes("Configure —"));
+      expect(back).toContain("demo");
+    } finally {
+      app.ui.destroy();
+    }
+  });
+
+  test("the conversation survives the round trip", async () => {
+    const app = await createTestUi();
+    try {
+      await enterChat(app);
+      await app.mockInput.typeText("remember this");
+      await pressAndSettle(app, () => app.mockInput.pressEnter());
+      await app.waitForFrame((frame) => frame.includes("remember this"));
+      await pressAndSettle(app, () => app.mockInput.pressKey("x", { ctrl: true }));
+      await app.waitForFrame((frame) => frame.includes("Select a model"));
+      await pressAndSettle(app, () => app.mockInput.pressEnter());
+      await app.waitForFrame((frame) => frame.includes("Configure —"));
+      for (let i = 0; i < 22; i += 1) app.mockInput.pressArrow("down");
+      await app.flush();
+      await pressAndSettle(app, () => app.mockInput.pressEnter());
+      // The prompt's "Ask anything…" placeholder is only there on an empty
+      // transcript, so the conversation itself is the marker for the chat.
+      const chat = await app.waitForFrame(
+        (frame) => frame.includes("remember this") && !frame.includes("Configure —"),
+      );
+      expect(chat).toContain("remember this");
+    } finally {
+      app.ui.destroy();
+    }
+  });
+});
+
+describe("the keybinds screen", () => {
+  // The mock input takes escape sequences for these, not key names.
+  const PAGE_DOWN = "\u001B[6~";
+
+  test("ctrl+k lists every command with the key it is bound to", async () => {
+    const app = await createTestUi({ width: 130, height: 44 });
+    try {
+      await app.waitForFrame((frame) => frame.includes("loading lazyllama"));
+      // The splash swallows the first key press, so step past it first.
+      await pressAndSettle(app, () => app.mockInput.pressKey("a"));
+      await app.waitForFrame((frame) => frame.includes("Select a model"));
+      await pressAndSettle(app, () => app.mockInput.pressKey("k", { ctrl: true }));
+      const screen = await app.waitForFrame((frame) => frame.includes("Keybinds"));
+      expect(screen).toContain("Everywhere");
+      expect(screen).toContain("back to the menu");
+      expect(screen).toContain("Ctrl+X");
+      expect(screen).toContain("manual");
+      // The rest of the list is below the fold, so it takes a page down.
+      await pressAndSettle(app, () => app.mockInput.pressKey(PAGE_DOWN));
+      const paged = await app.waitForFrame((frame) => frame.includes("In chat"));
+      expect(paged).toContain("toggle the side panel");
+      expect(paged).toContain("Ctrl+B");
+      // The footer reference is generated from the same registry.
+      expect(screen).toContain("Enter rebind");
+      // Esc returns to the screen the help screen was opened from.
+      await pressAndSettle(app, () => app.mockInput.pressEscape());
+      await app.waitForFrame((frame) => frame.includes("Select a model"));
+    } finally {
+      app.ui.destroy();
+    }
+  });
+
+  test("a rebound key changes what the key does, and survives a restart", async () => {
+    const app = await createTestUi();
+    try {
+      await app.waitForFrame((frame) => frame.includes("loading lazyllama"));
+      await pressAndSettle(app, () => app.mockInput.pressKey("a"));
+      await app.waitForFrame((frame) => frame.includes("Select a model"));
+      await pressAndSettle(app, () => app.mockInput.pressKey("k", { ctrl: true }));
+      await app.waitForFrame((frame) => frame.includes("Keybinds"));
+      // The first command is app.quit; move to "rescan the models" instead.
+      const rows = KEYBIND_DEFS.findIndex((def) => def.id === "hub.models.refresh");
+      for (let i = 0; i < rows; i += 1) app.mockInput.pressArrow("down");
+      await app.flush();
+      const focused = await app.waitForFrame((frame) => frame.includes("▸ rescan the models"));
+      expect(focused).toContain("R");
+      await pressAndSettle(app, () => app.mockInput.pressEnter());
+      const recording = await app.waitForFrame((frame) => frame.includes("press a key"));
+      expect(recording).toContain("rescan the models");
+      await pressAndSettle(app, () => app.mockInput.pressKey("f"));
+      const rebound = await app.waitForFrame((frame) => frame.includes("is now F"));
+      expect(rebound).toContain("rescan the models");
+      expect(rebound).toContain("(changed)");
+      await pressAndSettle(app, () => app.mockInput.pressEscape());
+      // F rescans now, and R no longer claims anything.
+      const picker = await app.waitForFrame((frame) => frame.includes("Select a model"));
+      expect(picker).toContain("F refresh");
+      expect(picker).not.toContain("R refresh");
+      await pressAndSettle(app, () => app.mockInput.pressKey("f"));
+      await app.flush();
+      expect(app.renderer.currentFocusedRenderable?.id).toBe("hub-models");
+      // The override is on disk, and a second app picks it up.
+      const written = JSON.parse(readFileSync(join(configDir, "keybinds.json"), "utf8")) as Record<string, string[]>;
+      expect(written["hub.models.refresh"]).toEqual(["f"]);
+      app.ui.destroy();
+      const restarted = await createTestUi();
+      try {
+        await restarted.waitForFrame((frame) => frame.includes("loading lazyllama"));
+        await pressAndSettle(restarted, () => restarted.mockInput.pressKey("a"));
+        const frame = await restarted.waitForFrame((frame) => frame.includes("Select a model"));
+        expect(frame).toContain("F refresh");
+      } finally {
+        restarted.ui.destroy();
+      }
+    } finally {
+      app.ui.destroy();
+    }
+  });
+
+  test("a recorded key is not run as a command while it is being recorded", async () => {
+    const app = await createTestUi();
+    try {
+      await app.waitForFrame((frame) => frame.includes("loading lazyllama"));
+      await pressAndSettle(app, () => app.mockInput.pressKey("a"));
+      await app.waitForFrame((frame) => frame.includes("demo.gguf"));
+      // Enter would normally open the model and start the editor.
+      await pressAndSettle(app, () => app.mockInput.pressKey("k", { ctrl: true }));
+      await app.waitForFrame((frame) => frame.includes("Keybinds"));
+      await pressAndSettle(app, () => app.mockInput.pressEnter());
+      await app.waitForFrame((frame) => frame.includes("press a key"));
+      await pressAndSettle(app, () => app.mockInput.pressEnter());
+      const screen = await app.waitForFrame((frame) => frame.includes("is now Enter"));
+      // Recording consumed the Enter instead of activating the row beneath it.
+      expect(screen).toContain("Keybinds");
+      expect(screen).not.toContain("Configure —");
+      expect(app.confirmed.length).toBe(0);
+    } finally {
+      app.ui.destroy();
+    }
+  });
+
+  test("Del restores the shipped default", async () => {
+    const app = await createTestUi();
+    try {
+      await app.waitForFrame((frame) => frame.includes("loading lazyllama"));
+      await pressAndSettle(app, () => app.mockInput.pressKey("a"));
+      await app.waitForFrame((frame) => frame.includes("Select a model"));
+      await pressAndSettle(app, () => app.mockInput.pressKey("k", { ctrl: true }));
+      await app.waitForFrame((frame) => frame.includes("Keybinds"));
+      const index = KEYBIND_DEFS.findIndex((def) => def.id === "session.toggle.thinking");
+      for (let i = 0; i < index; i += 1) app.mockInput.pressArrow("down");
+      await paint(app, 150);
+      await app.waitForFrame((frame) => frame.includes("▸ show or hide thinking"), { maxPasses: 60 });
+      // Enter starts recording, the next key press becomes the binding, and Del
+      // puts the shipped default back.
+      await pressAndSettle(app, () => app.mockInput.pressEnter());
+      await app.waitForFrame((frame) => frame.includes("press a key"));
+      await pressAndSettle(app, () => app.mockInput.pressKey("g"));
+      await app.waitForFrame((frame) => frame.includes("is now G"));
+      await pressAndSettle(app, () => app.mockInput.pressKey("\u001b[3~"));
+      const reset = await app.waitForFrame((frame) => frame.includes("back to its default"));
+      expect(reset).toContain("Ctrl+T");
+      expect(reset).not.toContain("(changed)");
+    } finally {
+      app.ui.destroy();
+    }
+  });
+
+  test("a key bound to two commands says so instead of failing silently", async () => {
+    const app = await createTestUi();
+    try {
+      await app.waitForFrame((frame) => frame.includes("loading lazyllama"));
+      await pressAndSettle(app, () => app.mockInput.pressKey("a"));
+      await app.waitForFrame((frame) => frame.includes("demo.gguf"));
+      await pressAndSettle(app, () => app.mockInput.pressKey("k", { ctrl: true }));
+      await app.waitForFrame((frame) => frame.includes("Keybinds"));
+      const index = KEYBIND_DEFS.findIndex((def) => def.id === "hub.models.refresh");
+      for (let i = 0; i < index; i += 1) app.mockInput.pressArrow("down");
+      await paint(app, 150);
+      await app.waitForFrame((frame) => frame.includes("▸ rescan the models"), { maxPasses: 60 });
+      await pressAndSettle(app, () => app.mockInput.pressEnter());
+      await app.waitForFrame((frame) => frame.includes("press a key"));
+      // Ctrl+B already belongs to the side panel toggle.
+      await pressAndSettle(app, () => app.mockInput.pressKey("b", { ctrl: true }));
+      const clash = await app.waitForFrame((frame) => frame.includes("is now Ctrl+B"));
+      expect(clash).toContain("toggle the side panel");
     } finally {
       app.ui.destroy();
     }

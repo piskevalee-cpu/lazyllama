@@ -57,7 +57,7 @@ export interface UiHandles extends ChatView {
   destroy(): void;
 }
 
-export type Screen = "splash" | "models" | "edit" | "manual" | "chat";
+export type Screen = "splash" | "models" | "edit" | "manual" | "keybinds" | "chat";
 
 export interface AppUiOptions {
   splashMinMs?: number;

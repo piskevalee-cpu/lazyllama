@@ -26,7 +26,7 @@ import { formatBytes } from "../paths.js";
 import { sampleGpuMemory, type GpuMemory } from "../vram.js";
 import type { SplashFrame } from "../splash.js";
 import { staticText, surface } from "./components.js";
-import { isEnterKey, isEscapeKey, isQuitKey } from "./keys.js";
+import { isEnterKey, isEscapeKey, isWizardQuitKey } from "./keys.js";
 import { gradientFill, meterTokens, sweepFill } from "./meter.js";
 import { SplashView } from "./splashView.js";
 import { DARK_THEME, type UiTheme } from "./theme.js";
@@ -594,7 +594,7 @@ export class InstallView {
 
   /** Global keys. Non-Escape keys still reach the focused control first. */
   handleKey(key: KeyEvent): void {
-    if (isQuitKey(key)) {
+    if (isWizardQuitKey(key)) {
       this.events.onQuit();
       key.stopPropagation();
       return;

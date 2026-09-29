@@ -25,36 +25,14 @@ export function isEnterKey(key: Pick<KeyEvent, "name">): boolean {
   return (ENTER_KEY_NAMES as readonly string[]).includes(key.name);
 }
 
+// The app's own screens resolve their keys from the keybind registry; these two
+// are for the setup wizard, which runs before any preferences are loaded.
 export function isEscapeKey(key: Pick<KeyEvent, "name">): boolean {
   return key.name === "escape" || key.name === "esc";
 }
 
-export function isQuitKey(key: Pick<KeyEvent, "name" | "ctrl">): boolean {
+export function isWizardQuitKey(key: Pick<KeyEvent, "name" | "ctrl">): boolean {
   return key.name === "c" && key.ctrl === true;
-}
-
-export function isTabForward(key: Pick<KeyEvent, "name" | "shift">): boolean {
-  return key.name === "tab" && key.shift !== true;
-}
-
-export function isTabBackward(key: Pick<KeyEvent, "name" | "shift">): boolean {
-  return key.name === "tab" && key.shift === true;
-}
-
-export function isUpKey(key: Pick<KeyEvent, "name">): boolean {
-  return key.name === "up" || key.name === "k";
-}
-
-export function isDownKey(key: Pick<KeyEvent, "name">): boolean {
-  return key.name === "down" || key.name === "j";
-}
-
-export function isLeftKey(key: Pick<KeyEvent, "name">): boolean {
-  return key.name === "left" || key.name === "-";
-}
-
-export function isRightKey(key: Pick<KeyEvent, "name">): boolean {
-  return key.name === "right" || key.name === "+" || key.name === "=";
 }
 
 export interface KeySpec {
@@ -99,6 +77,13 @@ export function parseKeySpec(spec: string): KeySpec {
   return parsed;
 }
 
+// A spec that names a character which can only be typed with shift already
+// implies it: a terminal reports `?` as shift+/, so a binding written as "?"
+// has to match that. Every other spec matches its modifiers exactly.
+function impliesShift(name: string): boolean {
+  return name.length === 1 && !/[a-z0-9 ]/.test(name);
+}
+
 export function matchesKeySpec(key: KeyEvent, spec: string): boolean {
   const want = parseKeySpec(spec);
   if (canonicalKeyName(key.name) !== want.name) return false;
@@ -110,7 +95,9 @@ export function matchesKeySpec(key: KeyEvent, spec: string): boolean {
   // Unqualified modifiers must not be set, so "escape" never fires on
   // ctrl+escape and "b" never fires on ctrl+b.
   if (want.ctrl !== true && key.ctrl === true) return false;
-  if (want.shift !== true && key.shift === true && want.name !== "space") return false;
+  if (want.shift !== true && key.shift === true && want.name !== "space" && !impliesShift(want.name)) {
+    return false;
+  }
   if (want.alt !== true && key.option === true) return false;
   if (want.meta !== true && key.meta === true) return false;
   if (want.super !== true && key.super === true) return false;
@@ -145,6 +132,11 @@ export class Keymap {
 
   register(bindings: Binding[]): void {
     for (const binding of bindings) this.bindings.push(binding);
+  }
+
+  /** Drop every binding, so a rebind can regenerate the keymap from scratch. */
+  clear(): void {
+    this.bindings.length = 0;
   }
 
   get mode(): KeymapMode {
